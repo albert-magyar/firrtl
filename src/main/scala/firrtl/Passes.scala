@@ -11,7 +11,7 @@ import PrimOps._
 
 case class Location(base:Expression,guard:Expression)
 
-
+@deprecated("This object will be replaced with package firrtl.passes")
 object Passes extends LazyLogging {
 
 
