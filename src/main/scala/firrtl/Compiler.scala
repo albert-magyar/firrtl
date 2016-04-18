@@ -73,7 +73,7 @@ object VerilogCompiler extends Compiler {
     RemoveAccesses,
     ExpandWhens,
     CheckInitialization,   
-    ConstProp,
+    Legalize,
     ResolveKinds,
     InferTypes,
     ResolveGenders,
@@ -83,6 +83,9 @@ object VerilogCompiler extends Compiler {
     InferTypes,
     ResolveGenders,
     InferWidths,
+    ConstProp,
+    CommonSubexpressionElimination,
+    DeadCodeElimination,
     VerilogWrap,
     SplitExp,
     VerilogRename
@@ -90,7 +93,8 @@ object VerilogCompiler extends Compiler {
   def run(c: Circuit, w: Writer)
   {
     val loweredIR = PassUtils.executePasses(c, passes)
-    VerilogEmitter.run(loweredIR, w)
+    val verilogEmitter = new VerilogEmitter
+    verilogEmitter.run(loweredIR, w)
   }
 
 }

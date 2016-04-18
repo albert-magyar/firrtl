@@ -54,27 +54,12 @@ object FIRRTLEmitter extends Emitter {
 
 case class VIndent()
 case class VRandom()
-object VerilogEmitter extends Emitter {
-   val tab = "   "
+class VerilogEmitter extends Emitter {
+   val tab = "  "
    val ran = VRandom()
    var w:Option[Writer] = None
    var mname = ""
    def wref (n:String,t:Type) = WRef(n,t,ExpKind(),UNKNOWNGENDER)
-   def escape (s:String) : String = {
-      val sx = ArrayBuffer[String]()
-      //sx += '"'.toString
-      var percent:Boolean = false
-      for (c <- s) {
-         if (c == '\n') sx += "\\n"
-         else if (c == '"') sx += '\\'.toString + '"'.toString
-         else {
-            if((c == 'x') && percent) sx += "h" else sx += c.toString
-         }
-         percent = (c == '%')
-      }
-      //sx += '"'.toString 
-      sx.reduce(_ + _)
-   }
    def remove_root (ex:Expression) : Expression = {
       (ex.as[WSubField].get.exp) match {
          case (e:WSubField) => remove_root(e)
@@ -211,7 +196,11 @@ object VerilogEmitter extends Emitter {
             }
          }
          case SHIFT_LEFT_OP => Seq(cast(a0())," << ",c0())
-         case SHIFT_RIGHT_OP => Seq(a0(),"[", long_BANG(tpe(a0())) - 1,":",c0(),"]")
+         case SHIFT_RIGHT_OP => {
+           if (c0 >= long_BANG(tpe(a0)))
+             error("Verilog emitter does not support SHIFT_RIGHT >= arg width")
+           Seq(a0(),"[", long_BANG(tpe(a0())) - 1,":",c0(),"]")
+         }
          case NEG_OP => Seq("-{",cast(a0()),"}")
          case CONVERT_OP => {
             tpe(a0()) match {
@@ -267,11 +256,12 @@ object VerilogEmitter extends Emitter {
       mname = m.name
       val netlist = LinkedHashMap[WrappedExpression,Expression]()
       val simlist = ArrayBuffer[Stmt]()
+      val namespace = Namespace(m)
       def build_netlist (s:Stmt) : Stmt = {
          s match {
             case (s:Connect) => netlist(s.loc) = s.exp
             case (s:IsInvalid) => {
-               val n = firrtl_gensym_module(mname)
+               val n = namespace.newTemp
                val e = wref(n,tpe(s.exp))
                netlist(s.exp) = e
             }
@@ -300,26 +290,31 @@ object VerilogEmitter extends Emitter {
       }
       def assign (e:Expression,value:Expression) =
          assigns += Seq("assign ",e," = ",value,";")
-      def update_and_reset (r:Expression,clk:Expression,reset:Expression,init:Expression) = {
-         if (!at_clock.contains(clk)) { at_clock(clk) = ArrayBuffer[Seq[Any]]() }
-         def add_update (e:Expression,tabs:String) : Unit = {
-            e match {
-               case (e:Mux) => {
-                  at_clock(clk) += Seq(tabs,"if(",e.cond,") begin")
-                  add_update(e.tval,tabs + tab)
-                  at_clock(clk) += Seq(tabs,"end else begin")
-                  add_update(e.fval,tabs + tab)
-                  at_clock(clk) += Seq(tabs,"end")
-               }
-               case (e) => {
-                  if (weq(e,r)) at_clock(clk) += Seq(tabs,";")
-                  else at_clock(clk) += Seq(tabs,r," <= ",e,";")
-               }
+      def update_and_reset(r: Expression, clk: Expression, reset: Expression, init: Expression) = {
+        def addUpdate(e: Expression, tabs: String): Seq[Seq[Any]] = {
+          e match {
+            case m: Mux => {
+              val ifStatement = Seq(tabs, "if(", m.cond, ") begin")
+              val trueCase = addUpdate(m.tval, tabs + tab)
+              val elseStatement = Seq(tabs, "end else begin")
+              val falseCase = addUpdate(m.fval, tabs + tab)
+              val endStatement = Seq(tabs, "end")
+
+              if (falseCase.isEmpty)
+                ifStatement +: trueCase :+ endStatement
+              else
+                ifStatement +: trueCase ++: elseStatement +: falseCase :+ endStatement
             }
-         }
-         val tv = init
-         val fv = netlist(r)
-         add_update(Mux(reset,tv,fv,mux_type_and_widths(tv,fv)),"")
+            case _ if (weq(e, r)) => Seq()
+            case _ => Seq(Seq(tabs, r, " <= ", e, ";"))
+          }
+        }
+
+        at_clock.getOrElseUpdate(clk, ArrayBuffer[Seq[Any]]()) ++= {
+          val tv = init
+          val fv = netlist(r)
+          addUpdate(Mux(reset, tv, fv, mux_type_and_widths(tv, fv)), "")
+        }
       }
       def update (e:Expression,value:Expression,clk:Expression,en:Expression) = {
          if (!at_clock.contains(clk)) at_clock(clk) = ArrayBuffer[Seq[Any]]()
@@ -331,10 +326,10 @@ object VerilogEmitter extends Emitter {
          }
       }
       def initialize (e:Expression) = initials += Seq(e," = ",rand_string(tpe(e)),";")
-      def initialize_mem (n:String,i:Int,t:Type) = {
-         initials += Seq("for (initvar = 0; initvar < ",i,"; initvar = initvar+1)")
-         val index = WRef("initvar",UnknownType(),ExpKind(),UNKNOWNGENDER)
-         initials += Seq(tab,WSubAccess(wref(n,t),index,UnknownType(),FEMALE), " = ",rand_string(t),";")
+      def initialize_mem(s: DefMemory) = {
+        initials += Seq("for (initvar = 0; initvar < ", s.depth, "; initvar = initvar+1)")
+        val index = WRef("initvar", s.data_type, ExpKind(), UNKNOWNGENDER)
+        initials += Seq(tab, WSubAccess(wref(s.name, s.data_type), index, s.data_type, FEMALE), " = ", rand_string(s.data_type), ";")
       }
       def instantiate (n:String,m:String,es:Seq[Expression]) = {
          instdeclares += Seq(m," ",n," (")
@@ -355,23 +350,30 @@ object VerilogEmitter extends Emitter {
       def simulate (clk:Expression,en:Expression,s:Seq[Any]) = {
          if (!at_clock.contains(clk)) at_clock(clk) = ArrayBuffer[Seq[Any]]()
          at_clock(clk) += Seq("`ifndef SYNTHESIS")
-         at_clock(clk) += Seq(tab,"if(",en,") begin")
-         at_clock(clk) += Seq(tab,tab,s)
+         at_clock(clk) += Seq("`ifdef PRINTF_COND")
+         at_clock(clk) += Seq(tab,"if (`PRINTF_COND) begin")
+         at_clock(clk) += Seq("`endif")
+         at_clock(clk) += Seq(tab,tab,"if (",en,") begin")
+         at_clock(clk) += Seq(tab,tab,tab,s)
+         at_clock(clk) += Seq(tab,tab,"end")
+         at_clock(clk) += Seq("`ifdef PRINTF_COND")
          at_clock(clk) += Seq(tab,"end")
+         at_clock(clk) += Seq("`endif")
          at_clock(clk) += Seq("`endif")
       }
       def stop (ret:Int) : Seq[Any] = {
          Seq("$fdisplay(32'h80000002,\"",ret,"\");$finish;")
       }
-      def printf (str:String,args:Seq[Expression]) : Seq[Any] = {
+      def printf (str:StringLit,args:Seq[Expression]) : Seq[Any] = {
          val q = '"'.toString
-	 val strx = (Seq(q + escape(str) + q) ++ args.flatMap(x => Seq(",",x)))
+	       val strx = Seq(q + VerilogStringLitHandler.escape(str) + q) ++
+                    args.flatMap(x => Seq(",",x))
          Seq("$fwrite(32'h80000002,",strx,");")
       }
       def delay (e:Expression, n:Int, clk:Expression) : Expression = {
          var ex = e
          for (i <- 0 until n) {
-            val name = firrtl_gensym_module(mname)
+            val name = namespace.newTemp
             declare("reg",name,tpe(e))
             val exx = WRef(name,tpe(e),ExpKind(),UNKNOWNGENDER)
             update(exx,ex,clk,one)
@@ -396,6 +398,7 @@ object VerilogEmitter extends Emitter {
       }
       def build_streams (s:Stmt) : Stmt = {
          s match {
+            case (s:Empty) => s
             case (s:Connect) => s
             case (s:DefWire) => 
                declare("wire",s.name,s.tpe)
@@ -438,7 +441,7 @@ object VerilogEmitter extends Emitter {
                }
       
                declare("reg",s.name,VectorType(s.data_type,s.depth))
-               initialize_mem(s.name,s.depth,s.data_type)
+               initialize_mem(s)
                for (r <- s.readers ) {
                   val data = mem_exp(r,"data")
                   val addr = mem_exp(r,"addr")
@@ -456,7 +459,7 @@ object VerilogEmitter extends Emitter {
                   assign(clk,netlist(clk))   //;Connects value to m.r.clk
                   val addrx = delay(addr,s.read_latency,clk)
                   val enx = delay(en,s.read_latency,clk)
-                  val mem_port = WSubAccess(mem,addrx,UnknownType(),UNKNOWNGENDER)
+                  val mem_port = WSubAccess(mem,addrx,s.data_type,UNKNOWNGENDER)
                   assign(data,mem_port)
                }
    
@@ -484,7 +487,7 @@ object VerilogEmitter extends Emitter {
                   val addrx = delay(addr,s.write_latency - 1,clk)
                   val maskx = delay(mask,s.write_latency - 1,clk)
                   val enx = delay(en,s.write_latency - 1,clk)
-                  val mem_port = WSubAccess(mem,addrx,UnknownType(),UNKNOWNGENDER)
+                  val mem_port = WSubAccess(mem,addrx,s.data_type,UNKNOWNGENDER)
                   update(mem_port,datax,clk,AND(enx,maskx))
                }
    
@@ -524,9 +527,9 @@ object VerilogEmitter extends Emitter {
    
                   //; Write 
    
-                  val rmem_port = WSubAccess(mem,raddrx,UnknownType(),UNKNOWNGENDER)
+                  val rmem_port = WSubAccess(mem,raddrx,s.data_type,UNKNOWNGENDER)
                   assign(rdata,rmem_port)
-                  val wmem_port = WSubAccess(mem,waddrx,UnknownType(),UNKNOWNGENDER)
+                  val wmem_port = WSubAccess(mem,waddrx,s.data_type,UNKNOWNGENDER)
                   update(wmem_port,datax,clk,AND(AND(enx,maskx),wmode))
                }
             }
@@ -558,7 +561,9 @@ object VerilogEmitter extends Emitter {
             emit(Seq("`ifndef SYNTHESIS"))
             emit(Seq("  integer initvar;"))
             emit(Seq("  initial begin"))
-            emit(Seq("    #0.002;"))
+            emit(Seq("    `ifndef verilator"))
+            emit(Seq("      #0.002;"))
+            emit(Seq("    `endif"))
             for (x <- initials) {
                emit(Seq(tab,x))
             }

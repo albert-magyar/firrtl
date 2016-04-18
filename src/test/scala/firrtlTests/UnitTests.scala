@@ -27,28 +27,52 @@ MODIFICATIONS.
 
 package firrtlTests
 
+import java.io._
 import org.scalatest._
 import org.scalatest.prop._
+import firrtl.{Parser,Circuit}
+import firrtl.passes.{Pass,ToWorkingIR,CheckHighForm,ResolveKinds,InferTypes,CheckTypes,PassExceptions}
 
-class IntegrationSpec extends FirrtlPropSpec {
-
-  case class Test(name: String, dir: String)
-
-  val runTests = Seq(Test("GCDTester", "/integration"),
-                     Test("RightShiftTester", "/integration"))
-      
-
-  runTests foreach { test =>
-    property(s"${test.name} should execute correctly") {
-      runFirrtlTest(test.name, test.dir)
+class UnitTests extends FlatSpec with Matchers {
+  "Connecting bundles of different types" should "throw an exception" in {
+    val passes = Seq(
+      ToWorkingIR,
+      CheckHighForm,
+      ResolveKinds,
+      InferTypes,
+      CheckTypes)
+    val input =
+      """circuit Unit :
+        |  module Unit :
+        |    input y: {a : UInt<1>}
+        |    output x: {a : UInt<1>, b : UInt<1>}
+        |    x <= y""".stripMargin
+    intercept[PassExceptions] {
+      passes.foldLeft(Parser.parse("",input.split("\n").toIterator)) {
+        (c: Circuit, p: Pass) => p.run(c)
+      }
     }
   }
 
-  val compileTests = Seq(Test("rocket", "/regress"), Test("rocket-firrtl", "/regress"))
-
-  compileTests foreach { test =>
-    property(s"${test.name} should compile to Verilog") {
-      compileFirrtlTest(test.name, test.dir)
+  "Initializing a register with a different type" should "throw an exception" in {
+    val passes = Seq(
+      ToWorkingIR,
+      CheckHighForm,
+      ResolveKinds,
+      InferTypes,
+      CheckTypes)
+    val input =
+     """circuit Unit :
+       |  module Unit :
+       |    input clk : Clock
+       |    input reset : UInt<1>
+       |    wire x : { valid : UInt<1> }
+       |    reg y : { valid : UInt<1>, bits : UInt<3> }, clk with :
+       |      reset => (reset, x)""".stripMargin
+    intercept[PassExceptions] {
+      passes.foldLeft(Parser.parse("",input.split("\n").toIterator)) {
+        (c: Circuit, p: Pass) => p.run(c)
+      }
     }
   }
 }

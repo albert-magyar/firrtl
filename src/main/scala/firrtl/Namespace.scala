@@ -25,30 +25,63 @@ TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR
 MODIFICATIONS.
 */
 
-package firrtlTests
+package firrtl
 
-import org.scalatest._
-import org.scalatest.prop._
+import scala.collection.mutable.HashSet
+import Mappers._
 
-class IntegrationSpec extends FirrtlPropSpec {
+class Namespace private {
+  private val tempNamePrefix: String = "GEN"
+  // Begin with a tempNamePrefix in namespace so we always have a number suffix
+  private val namespace = HashSet[String](tempNamePrefix)
+  private var n = 0L
 
-  case class Test(name: String, dir: String)
-
-  val runTests = Seq(Test("GCDTester", "/integration"),
-                     Test("RightShiftTester", "/integration"))
-      
-
-  runTests foreach { test =>
-    property(s"${test.name} should execute correctly") {
-      runFirrtlTest(test.name, test.dir)
+  def tryName(value: String): Boolean = {
+    if (!namespace.contains(value)) {
+      namespace += value
+      true
+    } else {
+      false
     }
   }
-
-  val compileTests = Seq(Test("rocket", "/regress"), Test("rocket-firrtl", "/regress"))
-
-  compileTests foreach { test =>
-    property(s"${test.name} should compile to Verilog") {
-      compileFirrtlTest(test.name, test.dir)
+  def newName(value: String): String = {
+    var str = value
+    while (!tryName(str)) {
+      str = s"${value}_$n"
+      n += 1
     }
+    str
+  }
+  def newTemp: String = newName(tempNamePrefix)
+}
+
+object Namespace {
+  def apply(): Namespace = new Namespace
+
+  // Initializes a namespace from a Module
+  def apply(m: Module): Namespace = {
+    val namespace = new Namespace
+
+    def buildNamespaceStmt(s: Stmt): Stmt =
+      s map buildNamespaceStmt match {
+        case dec: IsDeclaration =>
+          namespace.namespace += dec.name
+          dec
+        case x => x
+      }
+    def buildNamespacePort(p: Port): Port = p match {
+      case dec: IsDeclaration =>
+        namespace.namespace += dec.name
+        dec
+      case x => x
+    }
+    m.ports map buildNamespacePort
+    m match {
+      case in: InModule => buildNamespaceStmt(in.body)
+      case _ => // Do nothing
+    }
+
+    namespace
   }
 }
+

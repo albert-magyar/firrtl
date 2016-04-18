@@ -4,12 +4,12 @@ regress_dir ?= $(root_dir)/regress
 firrtl_dir ?= $(root_dir)/src/main/stanza
 install_dir ?= $(root_dir)/utils/bin
 
+sbt ?= sbt
 stanza ?= $(install_dir)/stanza
 stanza_bin ?= $(install_dir)/firrtl-stanza
 scala_jar ?= $(install_dir)/firrtl.jar
-scala_src=$(shell ls src/main/scala/firrtl/*.scala)
+scala_src := $(shell find src -type f \( -name "*.scala" -o -path "*/resources/*" \))
 stanza_src=$(shell ls src/main/stanza/*.stanza)
-sbt ?= sbt
 
 all-noise: 
 	${MAKE} all || ${MAKE} fail
@@ -34,25 +34,16 @@ $(stanza): $(root_dir)/src/lib/stanza/stamp $(root_dir)/utils/stanza-wrapper
 $(stanza_bin): $(stanza) $(stanza_src)
 	cd $(firrtl_dir) && $(stanza) -i firrtl-test-main.stanza -o $@
 
-build-deploy: $(stanza)
-	cd $(firrtl_dir) && $(stanza) -i firrtl-main.stanza -o $(install_dir)/firrtl
-
-build: $(stanza)
-	cd $(firrtl_dir) && $(stanza) -i firrtl-test-main.stanza -o $(install_dir)/firrtl
-
-build-fast: $(stanza)
-	cd $(firrtl_dir) && $(stanza) -i firrtl-test-main.stanza -o $(install_dir)/firrtl -flags OPTIMIZE
-
-build-deploy: 
-	cd $(firrtl_dir) && $(stanza) -i firrtl-main.stanza -o $(install_dir)/firrtl-stanza
-	$(MAKE) set-stanza
-
-build: 
+build-stanza: $(stanza)
 	cd $(firrtl_dir) && $(stanza) -i firrtl-test-main.stanza -o $(install_dir)/firrtl-stanza
 	$(MAKE) set-stanza
 
-build-fast: 
+build-fast: $(stanza)
 	cd $(firrtl_dir) && $(stanza) -i firrtl-test-main.stanza -o $(install_dir)/firrtl-stanza -flags OPTIMIZE
+	$(MAKE) set-stanza
+
+build-deploy: $(stanza)
+	cd $(firrtl_dir) && $(stanza) -i firrtl-main.stanza -o $(install_dir)/firrtl-stanza
 	$(MAKE) set-stanza
 
 check: 
@@ -72,9 +63,6 @@ jack:
 
 passes: 
 	cd $(test_dir)/passes && lit -v . --path=$(install_dir)/
-
-perf: 
-	cd $(test_dir)/performance && lit -v . --path=$(install_dir)/
 
 errors:
 	cd $(test_dir)/errors && lit -v . --path=$(install_dir)/
@@ -114,6 +102,8 @@ done: build-fast check regress
 fail:
 	say "fail"
 
+build:	build-scala
+
 # Scala Added Makefile commands
 
 build-scala: $(scala_jar)
@@ -123,7 +113,7 @@ $(scala_jar): $(scala_src)
 	"$(sbt)" "assembly"
 
 test-scala:
-	cd $(test_dir)/parser && lit -v . --path=$(install_dir)/
+	"$(sbt)" test
 
 set-scala:
 	ln -f -s $(install_dir)/firrtl-scala $(install_dir)/firrtl

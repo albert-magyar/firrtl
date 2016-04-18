@@ -25,30 +25,60 @@ TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR
 MODIFICATIONS.
 */
 
-package firrtlTests
+package firrtl.passes
 
-import org.scalatest._
-import org.scalatest.prop._
+import firrtl._
+import firrtl.Utils._
+import firrtl.Mappers._
 
-class IntegrationSpec extends FirrtlPropSpec {
+import annotation.tailrec
 
-  case class Test(name: String, dir: String)
+object DeadCodeElimination extends Pass {
+  def name = "Dead Code Elimination"
 
-  val runTests = Seq(Test("GCDTester", "/integration"),
-                     Test("RightShiftTester", "/integration"))
-      
+  private def dceOnce(s: Stmt): (Stmt, Long) = {
+    val referenced = collection.mutable.HashSet[String]()
+    var nEliminated = 0L
 
-  runTests foreach { test =>
-    property(s"${test.name} should execute correctly") {
-      runFirrtlTest(test.name, test.dir)
+    def checkExpressionUse(e: Expression): Expression = {
+      e match {
+        case WRef(name, _, _, _) => referenced += name
+        case _ => e map checkExpressionUse
+      }
+      e
     }
+
+    def checkUse(s: Stmt): Stmt = s map checkUse map checkExpressionUse
+
+    def maybeEliminate(x: Stmt, name: String) =
+      if (referenced(name)) x
+      else {
+        nEliminated += 1
+        Empty()
+      }
+
+    def removeUnused(s: Stmt): Stmt = s match {
+      case x: DefRegister => maybeEliminate(x, x.name)
+      case x: DefWire => maybeEliminate(x, x.name)
+      case x: DefNode => maybeEliminate(x, x.name)
+      case x => s map removeUnused
+    }
+
+    checkUse(s)
+    (removeUnused(s), nEliminated)
   }
 
-  val compileTests = Seq(Test("rocket", "/regress"), Test("rocket-firrtl", "/regress"))
+  @tailrec
+  private def dce(s: Stmt): Stmt = {
+    val (res, n) = dceOnce(s)
+    if (n > 0) dce(res) else res
+  }
 
-  compileTests foreach { test =>
-    property(s"${test.name} should compile to Verilog") {
-      compileFirrtlTest(test.name, test.dir)
+  def run(c: Circuit): Circuit = {
+    val modulesx = c.modules.map {
+      case m: ExModule => m
+      case m: InModule => InModule(m.info, m.name, m.ports, dce(m.body))
     }
+    Circuit(c.info, modulesx, c.main)
   }
 }

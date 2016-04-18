@@ -36,6 +36,7 @@ import scala.io.Source
 
 // Datastructures
 import scala.collection.mutable.LinkedHashMap
+import scala.collection.mutable.HashMap
 import scala.collection.mutable.ArrayBuffer
 
 import firrtl._
@@ -185,7 +186,6 @@ object ResolveKinds extends Pass {
 object InferTypes extends Pass {
    private var mname = ""
    def name = "Infer Types"
-   val width_name_hash = LinkedHashMap[String,Int]()
    def set_type (s:Stmt,t:Type) : Stmt = {
       s match {
          case s:DefWire => DefWire(s.info,s.name,t)
@@ -195,17 +195,19 @@ object InferTypes extends Pass {
          case s:DefPoison => DefPoison(s.info,s.name,t)
       }
    }
-   def remove_unknowns_w (w:Width):Width = {
+   def remove_unknowns_w (w:Width)(implicit namespace: Namespace):Width = {
       w match {
-         case w:UnknownWidth => VarWidth(firrtl_gensym("w",width_name_hash))
+         case w:UnknownWidth => VarWidth(namespace.newName("w"))
          case w => w
       }
    }
-   def remove_unknowns (t:Type): Type = mapr(remove_unknowns_w _,t)
+   def remove_unknowns (t:Type)(implicit n: Namespace): Type = mapr(remove_unknowns_w _,t)
    def run (c:Circuit): Circuit = {
       val module_types = LinkedHashMap[String,Type]()
+      val module_wnamespaces = HashMap[String, Namespace]()
       def infer_types (m:Module) : Module = {
          val types = LinkedHashMap[String,Type]()
+         implicit val wnamespace = module_wnamespaces(m.name)
          def infer_types_e (e:Expression) : Expression = {
             e map (infer_types_e) match {
                case e:ValidIf => ValidIf(e.cond,e.value,tpe(e.value))
@@ -269,6 +271,8 @@ object InferTypes extends Pass {
       val modulesx = c.modules.map { 
          m => {
             mname = m.name
+            implicit val wnamespace = Namespace()
+            module_wnamespaces += (m.name -> wnamespace)
             val portsx = m.ports.map(p => Port(p.info,p.name,p.direction,remove_unknowns(p.tpe)))
             m match {
                case m:InModule => InModule(m.info,m.name,portsx,m.body)
@@ -854,12 +858,12 @@ object RemoveAccesses extends Pass {
    }
    def run (c:Circuit): Circuit = {
       def remove_m (m:InModule) : InModule = {
-         val sh = sym_hash
+         val namespace = Namespace(m)
          mname = m.name
          def remove_s (s:Stmt) : Stmt = {
             val stmts = ArrayBuffer[Stmt]()
             def create_temp (e:Expression) : Expression = {
-               val n = firrtl_gensym_module(mname)
+               val n = namespace.newTemp
                stmts += DefWire(info(s),n,tpe(e))
                WRef(n,tpe(e),kind(e),gender(e))
             }
@@ -870,7 +874,11 @@ object RemoveAccesses extends Pass {
                   case (e:ValidIf) => e map (remove_e)
                   case (e:SIntValue) => e
                   case (e:UIntValue) => e
-                  case e => {
+                  case x => {
+                     val e = x match {
+                        case (w:WSubAccess) => WSubAccess(w.exp,remove_e(w.index),w.tpe,w.gender)
+                        case _ => x
+                     }
                      if (has_access(e)) {
                         val rs = get_locations(e)
                         val foo = rs.find(x => {x.guard != one})
@@ -1128,65 +1136,39 @@ object ExpandWhens extends Pass {
    }
 }
 
-object ConstProp extends Pass {
-   def name = "Constant Propogation"
-   var mname = ""
-   def const_prop_e (e:Expression) : Expression = {
-      e map (const_prop_e) match {
-         case (e:DoPrim) => {
-            e.op match {
-               case SHIFT_RIGHT_OP => {
-                  (e.args(0)) match {
-                     case (x:UIntValue) => {
-                        val b = x.value >> e.consts(0).toInt
-                        UIntValue(b,tpe(e).as[UIntType].get.width)
-                     }
-                     case (x:SIntValue) => {
-                        val b = x.value >> e.consts(0).toInt
-                        SIntValue(b,tpe(e).as[SIntType].get.width)
-                     }
-                     case (x) => e
-                  }
-               }
-               case BITS_SELECT_OP => {
-                  e.args(0) match {
-                     case (x:UIntValue) => {
-                        val hi = e.consts(0).toInt
-                        val lo = e.consts(1).toInt
-                        require(hi >= lo)
-                        val b = (x.value >> lo) & ((BigInt(1) << (hi - lo + 1)) - 1)
-                        UIntValue(b,tpe(e).as[UIntType].get.width)
-                     }
-                     case (x) => {
-                        if (long_BANG(tpe(e)) == long_BANG(tpe(x))) {
-                           tpe(x) match {
-                              case (t:UIntType) => x
-                              case _ => DoPrim(AS_UINT_OP,Seq(x),Seq(),tpe(e)) 
-                           }
-                        }
-                        else e
-                     }
-                  }
-               }
-               case (_) => e
-            }
-         }
-         case (e) => e
+// Replace shr by amount >= arg width with 0 for UInts and MSB for SInts
+// TODO replace UInt with zero-width wire instead
+object Legalize extends Pass {
+  def name = "Legalize"
+  def legalizeShiftRight (e: DoPrim): Expression = e.op match {
+    case SHIFT_RIGHT_OP => {
+      val amount = e.consts(0).toInt
+      val width = long_BANG(tpe(e.args(0)))
+      lazy val msb = width - 1
+      if (amount >= width) {
+        e.tpe match {
+          case t: UIntType => UIntValue(0, IntWidth(1))
+          case t: SIntType =>
+            DoPrim(BITS_SELECT_OP, e.args, Seq(msb, msb), SIntType(IntWidth(1)))
+          case t => error(s"Unsupported type ${t} for Primop Shift Right")
+        }
+      } else {
+        e
       }
-   }
-   def const_prop_s (s:Stmt) : Stmt = s map (const_prop_s) map (const_prop_e)
-   def run (c:Circuit): Circuit = {
-      val modulesx = c.modules.map{ m => {
-         m match {
-            case (m:ExModule) => m
-            case (m:InModule) => {
-               mname = m.name
-               InModule(m.info,m.name,m.ports,const_prop_s(m.body))
-            }
-         }
-      }}
-      Circuit(c.info,modulesx,c.main)
-   }
+    }
+    case _ => e
+  }
+  def run (c: Circuit): Circuit = {
+    def legalizeE (e: Expression): Expression = {
+      e map (legalizeE) match {
+        case e: DoPrim => legalizeShiftRight(e)
+        case e => e
+      }
+    }
+    def legalizeS (s: Stmt): Stmt = s map (legalizeS) map (legalizeE)
+    def legalizeM (m: Module): Module = m map (legalizeS)
+    Circuit(c.info, c.modules.map(legalizeM), c.main)
+  }
 }
 
 object LoToVerilog extends Pass with StanzaPass {
@@ -1221,7 +1203,13 @@ object VerilogWrap extends Pass {
          case (e) => e
       }
    }
-   def v_wrap_s (s:Stmt) : Stmt = s map (v_wrap_s) map (v_wrap_e)
+   def v_wrap_s (s:Stmt) : Stmt = {
+      s map (v_wrap_s) map (v_wrap_e) match {
+        case s: Print =>
+           Print(s.info, VerilogStringLitHandler.format(s.string), s.args, s.clk, s.en)
+        case s => s
+      }
+   }
    def run (c:Circuit): Circuit = {
       val modulesx = c.modules.map{ m => {
          (m) match {
@@ -1240,11 +1228,12 @@ object SplitExp extends Pass {
    def name = "Split Expressions"
    var mname = ""
    def split_exp (m:InModule) : InModule = {
+      val namespace = Namespace(m)
       mname = m.name
       val v = ArrayBuffer[Stmt]()
       def split_exp_s (s:Stmt) : Stmt = {
          def split (e:Expression) : Expression = {
-            val n = firrtl_gensym_module(mname)
+            val n = namespace.newTemp
             v += DefNode(info(s),n,e)
             WRef(n,tpe(e),kind(e),gender(e))
          }
