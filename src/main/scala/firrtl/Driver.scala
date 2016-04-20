@@ -93,6 +93,7 @@ Options:
     options('compiler) match {
       case "verilog" => compile(input, output, VerilogCompiler)
       case "firrtl" => compile(input, output, FIRRTLCompiler)
+      case "sram" => compile(input, output, SRAMCompiler)
       case other => throw new Exception("Invalid compiler! " + other)
     }
   }

@@ -39,8 +39,91 @@ import firrtl.Serialize._
 import firrtl.PrimOps._
 import firrtl.WrappedExpression._
 
-object CanonicalizeMemPorts extends Pass {
-  def name = "CanonicalizeMemPorts"
+object toBits {
+  def apply(e: Expression): Expression = {
+    e match {
+      case ex: Ref => hiercat(ex,ex.tpe)
+      case ex: SubField => hiercat(ex,ex.tpe)
+      case ex: SubIndex => hiercat(ex,ex.tpe)
+      case t => error("Invalid operand expression for toBits!")
+    }
+  }
+  def hiercat(e: Expression, dt: Type): Expression = {
+    dt match {
+      case t:VectorType => DoPrim(CONCAT_OP, (0 to t.size).map(i => hiercat(SubIndex(e, i, t.tpe),t.tpe)), Seq.empty[BigInt], UnknownType())
+      case t:BundleType => DoPrim(CONCAT_OP, t.fields.map(f => hiercat(SubField(e, f.name, f.tpe),f.tpe)), Seq.empty[BigInt], UnknownType())
+      case t:UIntType => e
+      case t:SIntType => e
+      case t => error("Unknown type encountered in toBits!")
+    }
+  }
+}
+
+object bitWidth {
+  def apply(dt: Type): BigInt = widthOf(dt)
+  def widthOf(dt: Type): BigInt = {
+    dt match {
+      case t:VectorType => t.size * bitWidth(t.tpe)
+      case t:BundleType => t.fields.map(f => bitWidth(f.tpe)).foldLeft(BigInt(0))(_+_)
+      case t:UIntType => baseWidth(t.width)
+      case t:SIntType => baseWidth(t.width)
+      case t => error("Unknown type encountered in bitWidth!")
+    }
+  }
+  def baseWidth(w: Width): BigInt = {
+   w match {
+     case w:IntWidth => w.width
+     case w => error("Unknown width encountered in bitWidth!")
+   }
+  }
+}
+
+object fromBits {
+  def apply(lhs: Expression, rhs: Expression): Stmt = {
+    val fbits = lhs match {
+      case ex: Ref => getPart(ex,ex.tpe,rhs,0)
+      case ex: SubField => getPart(ex,ex.tpe,rhs,0)
+      case ex: SubIndex => getPart(ex,ex.tpe,rhs,0)
+      case t => error("Invalid LHS expression for fromBits!")
+    }
+    Begin(fbits._2)
+  }
+  def getPartGround(lhs: Expression, lhst: Type, rhs: Expression, offset: BigInt): (BigInt, Seq[Stmt]) = {
+    val intWidth = bitWidth(lhst)
+    val sel = DoPrim(BITS_SELECT_OP,Seq(rhs),Seq(offset+intWidth-1,offset),UnknownType())
+    (offset + intWidth, Seq(Connect(NoInfo,lhs,sel)))
+  }
+  def getPart(lhs: Expression, lhst: Type, rhs: Expression, offset: BigInt): (BigInt, Seq[Stmt]) = {
+    lhst match {
+      case t:VectorType => {
+        var currentOffset = offset
+        var stmts = Seq.empty[Stmt]
+        for (i <- (0 to t.size)) {
+          val (tmpOffset, substmts) = getPart(SubIndex(lhs, i, t.tpe), t.tpe, rhs, currentOffset)
+          stmts = stmts ++ substmts
+          currentOffset = tmpOffset
+        }
+        (currentOffset, stmts)
+      }
+      case t:BundleType => {
+        var currentOffset = offset
+        var stmts = Seq.empty[Stmt]
+        for (f <- t.fields.reverse) {
+          println("Resolving field " + f.name)
+          val (tmpOffset, substmts) = getPart(SubField(lhs, f.name, f.tpe), f.tpe, rhs, currentOffset)
+          stmts = stmts ++ substmts
+          currentOffset = tmpOffset
+        }
+        (currentOffset, stmts)
+      }
+      case t:UIntType => getPartGround(lhs,t,rhs,offset)
+      case t:SIntType => getPartGround(lhs,t,rhs,offset)
+      case t => error("Unknown type encountered in fromBits!")
+    }
+  }
+}
+
+object MemUtils {
   def rPortToBundle(name: String, mem: DefMemory) =
     BundleType(Seq(
       Field("data", REVERSE, mem.data_type),
@@ -67,23 +150,108 @@ object CanonicalizeMemPorts extends Pass {
     s.readers.map(p => Field(p, DEFAULT, rPortToBundle(p,s))) ++
       s.writers.map(p => Field(p, DEFAULT, wPortToBundle(p,s))) ++
       s.readwriters.map(p => Field(p, DEFAULT, rwPortToBundle(p,s))))
+  def deepField(wire: String, fieldChain: Seq[String]): SubField = {
+    if (fieldChain.length == 1) {
+      SubField(Ref(wire, UnknownType()), fieldChain.last, UnknownType())
+    } else {
+      SubField(deepField(wire, fieldChain.init), fieldChain.last, UnknownType())
+    }
+  }
+  // TODO: this is totally wrong
   def bulkConnect(a: String, b: String) = BulkConnect(
     NoInfo,
     Ref(a, UnknownType()),
     Ref(b, UnknownType()))
-  def simplifyMem(s: DefMemory): Stmt = {
+}
+
+object LowerMemTypes extends Pass {
+  def name = "LowerMemTypes"
+  def connectField(a: String, b: String, field: Seq[String]) =
+    Connect(NoInfo,
+      MemUtils.deepField(a,field),
+      MemUtils.deepField(b,field))
+  def adaptReader(aggPorts: DefWire, aggMem: DefMemory, groundMem: DefMemory, name: String): Stmt = {
+    val stmts = Seq(
+      connectField(groundMem.name,aggPorts.name,Seq(name,"addr")),
+      connectField(groundMem.name,aggPorts.name,Seq(name,"en")),
+      connectField(groundMem.name,aggPorts.name,Seq(name,"clk")),
+      fromBits(MemUtils.deepField(aggPorts.name,Seq(name,"data")).copy(tpe=aggMem.data_type),
+        MemUtils.deepField(groundMem.name,Seq(name,"data")).copy(tpe=groundMem.data_type))
+    )
+    Begin(stmts)
+  }
+  def adaptWriter(aggPorts: DefWire, aggMem: DefMemory, groundMem: DefMemory, name: String): Stmt = {
+    val stmts = Seq(
+      connectField(groundMem.name,aggPorts.name,Seq(name,"addr")),
+      connectField(groundMem.name,aggPorts.name,Seq(name,"en")),
+      connectField(groundMem.name,aggPorts.name,Seq(name,"clk")),
+      Connect(NoInfo,
+        MemUtils.deepField(groundMem.name,Seq(name,"data")),
+        toBits(MemUtils.deepField(aggPorts.name,Seq(name,"data")).copy(tpe=aggMem.data_type)))
+    )
+    Begin(stmts)
+  }
+  def lowerMem(s: DefMemory, ns: Namespace): Stmt = {
+    assert(!(s.data_type.isInstanceOf[UnknownType]))
+    val adapter = DefWire(s.info, s.name, MemUtils.memToBundle(s))
+    val simpleMem = s.copy(name=ns.newName(s.name), data_type=UIntType(IntWidth(bitWidth(s.data_type))))
+    val rconns = s.readers.map(x => adaptReader(adapter, s, simpleMem, x))
+    val wconns = s.writers.map(x => adaptWriter(adapter, s, simpleMem, x))
+    Begin(Seq(adapter,simpleMem) ++ rconns ++ wconns)
+  }
+  def transformMems(s: Stmt, ns: Namespace): Stmt = s match {
+    case s: DefMemory => lowerMem(s,ns)
+    case s => s map ((x: Stmt) => transformMems(x,ns))
+  }
+  def run(c: Circuit): Circuit = {
+    val transformedModules = c.modules.map {
+      m => m match {
+        case m: InModule => {
+          val ns = Namespace(m)
+          val transformedBody = transformMems(m.body,ns)
+          InModule(m.info, m.name, m.ports, transformedBody)
+        }
+        case m: ExModule => m
+      }
+    }
+    Circuit(c.info,transformedModules,c.main)
+  }
+}
+
+object CanonicalizeMemPorts extends Pass {
+  def name = "CanonicalizeMemPorts"
+  def simplifyMem(s: DefMemory, ns: Namespace): Stmt = {
     val rp = s.readers.zipWithIndex.map("r" + _._2)
     val wp = s.writers.zipWithIndex.map("w" + _._2)
     val rwp = s.readwriters.zipWithIndex.map("rw" + _._2)
-    val adapter = DefWire(s.info, s.name, memToBundle(s))
-    val simpleMem = s.copy(readers = rp, writers = wp, readwriters = rwp)
-    val rconn = (rp, s.readers).zipped.map(bulkConnect(_,_))
-    val wconn = (rp, s.writers).zipped.map(bulkConnect(_,_))
-    val rwconn = (rp, s.readwriters).zipped.map(bulkConnect(_,_))
+    val adapter = DefWire(s.info, s.name, MemUtils.memToBundle(s))
+    val simpleMem = s.copy(name=ns.newName(s.name), readers=rp, writers=wp, readwriters=rwp)
+    val rconn = (rp, s.readers).zipped.map((a,b) => MemUtils.bulkConnect(simpleMem.name + "." + a,
+      adapter.name + "." + b))
+    val wconn = (wp, s.writers).zipped.map((a,b) => MemUtils.bulkConnect(simpleMem.name + "." + a,
+      adapter.name + "." + b))
+    val rwconn = (rwp, s.readwriters).zipped.map((a,b) => MemUtils.bulkConnect(simpleMem.name + "." + a,
+      adapter.name + "." + b))
     val block = Seq(adapter, simpleMem) ++ rconn ++ wconn ++ rwconn
     return Begin(block)
   }
-  def run(c: Circuit): Circuit = c
+  def transformMems(s: Stmt, ns: Namespace): Stmt = s match {
+    case s: DefMemory => simplifyMem(s,ns)
+    case s => s map ((x: Stmt) => transformMems(x,ns))
+  }
+  def run(c: Circuit): Circuit = {
+    val transformedModules = c.modules.map {
+      m => m match {
+        case m: InModule => {
+          val ns = Namespace(m)
+          val transformedBody = transformMems(m.body,ns)
+          InModule(m.info, m.name, m.ports, transformedBody)
+        }
+        case m: ExModule => m
+      }
+    }
+    Circuit(c.info,transformedModules,c.main)
+  }
 }
 
 trait GenMems extends Pass {
@@ -126,7 +294,7 @@ object TestNoInlineMems extends GenMems {
   def emitExMemoryInstance(mem: DefMemory): DefInstance = {
     val memModuleName = "mem" + memID
     memID = memID + 1
-    ioMap.put(memModuleName,CanonicalizeMemPorts.memToBundle(mem))
+    ioMap.put(memModuleName,MemUtils.memToBundle(mem))
     DefInstance(mem.info, mem.name, memModuleName) 
   }
 }

@@ -37,6 +37,17 @@ trait Compiler extends LazyLogging {
   def run(c: Circuit, w: Writer)
 }
 
+object SRAMCompiler extends Compiler {
+  val passes = Seq(
+    CInferTypes,
+    LowerMemTypes
+  )
+  def run(c: Circuit, w: Writer) = {
+    val result = PassUtils.executePasses(c, passes)
+    FIRRTLEmitter.run(result, w)
+  }
+}
+
 object FIRRTLCompiler extends Compiler {
   val passes = Seq(
     CInferTypes,
