@@ -31,6 +31,8 @@ import com.typesafe.scalalogging.LazyLogging
 
 import scala.collection.mutable.LinkedHashSet
 import scala.collection.mutable.LinkedHashMap
+import scala.collection.mutable.HashMap
+import scala.collection.mutable.ArrayBuffer
 
 import firrtl._
 import firrtl.Utils._
@@ -164,6 +166,12 @@ object MemUtils {
     Ref(b, UnknownType()))
 }
 
+object ModularizeMems extends Pass {
+  def name = "ModularizeMems"
+  def memAdapters = LinkedHashSet[InModule]()
+  def run(c: Circuit) = c
+}
+
 object LowerMemTypes extends Pass {
   def name = "LowerMemTypes"
   def connectField(a: String, b: String, field: Seq[String]) =
@@ -254,14 +262,21 @@ object CanonicalizeMemPorts extends Pass {
   }
 }
 
-trait GenMems extends Pass {
+case class ExMemInfo(mem: DefMemory) extends Info {
+  override def toString = "Generated ExMem"
+}
+
+object NoInlineMems extends Pass {
+  def name = "NoInlineMems"
   def run(c: Circuit): Circuit = {
-    val memExModuleUIDs = LinkedHashSet[String]()
+    val exMems = LinkedHashMap[DefMemory,String]()
+    val moduleNS = Namespace()
+    c.modules.foreach(m => moduleNS.tryName(m.name))
     def transformMems(s: Stmt): Stmt = s match {
       case s: DefMemory => {
-        val exModuleInstance = emitExMemoryInstance(s)
-        memExModuleUIDs += exModuleInstance.name
-        exModuleInstance
+        val memModuleName = exMems.getOrElseUpdate(s.copy(info=NoInfo,name=""),
+          moduleNS.newName("mem"))
+        DefInstance(s.info, s.name, memModuleName)
       }
       case s => s map (transformMems)
     }
@@ -274,27 +289,57 @@ trait GenMems extends Pass {
         case m: ExModule => m
       } 
     }
-    val memExModules = memExModuleUIDs map {
-      uid => emitExMemoryModule(uid)
+    val memExModules = exMems map {
+      case (k,v) => {
+        val ioPorts = MemUtils.memToBundle(k).fields.map(f => Port(NoInfo, f.name, INPUT, f.tpe))
+        ExModule(ExMemInfo(k), v, ioPorts)
+      }
     }
     Circuit(c.info, transformedModules ++ memExModules, c.main)
   }
-  def emitExMemoryModule(uid: String): ExModule
-  def emitExMemoryInstance(mem: DefMemory): DefInstance
 }
 
-object TestNoInlineMems extends GenMems {
-  def name = "TestNoInlineMems"
-  val ioMap = LinkedHashMap[String,BundleType]()
-  var memID = 0
-  def emitExMemoryModule(uid: String): ExModule = {
-    val ioPorts = ioMap(uid).fields.map(f => Port(NoInfo, f.name, INPUT, f.tpe))
-    ExModule(NoInfo, uid, ioPorts)
+object LowerExMemTypes extends Pass {
+  def name = "LowerExMemTypes"
+  def connectField(a: String, b: String, field: Seq[String]) =
+    Connect(NoInfo,
+      MemUtils.deepField(a,field),
+      MemUtils.deepField(b,field))
+  def adaptReader(aggPorts: DefWire, aggMem: DefMemory, groundMem: DefMemory, name: String): Stmt = {
+    val stmts = Seq(
+      Connect(NoInfo,MemUtils.deepField(mname,Seq(name,"clk")),MemUtils.deepField(name,Seq("clk")))
+      Connect(NoInfo,MemUtils.deepField(mname,Seq(name,"addr")),MemUtils.deepField(name,Seq("addr")))
+      Connect(NoInfo,MemUtils.deepField(mname,Seq(name,"en")),MemUtils.deepField(name,Seq("en")))
+      fromBits(MemUtils.deepField(name,Seq("data")).copy(tpe=aggMem.data_type),
+        MemUtils.deepField(groundMem.name,Seq(name,"data")).copy(tpe=groundMem.data_type))
+    )
+    Begin(stmts)
   }
-  def emitExMemoryInstance(mem: DefMemory): DefInstance = {
-    val memModuleName = "mem" + memID
-    memID = memID + 1
-    ioMap.put(memModuleName,MemUtils.memToBundle(mem))
-    DefInstance(mem.info, mem.name, memModuleName) 
+  def lowerExMem(exmem: ExModule, info: ExMemInfo, ns: Namespace): Seq[Module] = {
+    assert(!(info.mem.data_type.isInstanceOf[UnknownType]))
+    val rconns = info.mem.readers.map(x => adaptReader(adapter, info.mem, simpleMem, x))
+    val wconns = info.mem.writers.map(x => adaptWriter(adapter, info.mem, simpleMem, x))
+    val adapter = InModule(
+      info,
+      ns.newName("mem_adapter"),
+      exmem.ports,
+      Begin(rconns ++ wconns)
+    )
+    Seq(exmem,adapter)
+  }
+  def run(c: Circuit): Circuit = {
+    val transformedModules = ArrayBuffer[Module]()
+    c.modules.foreach {
+      m => m match {
+        case m: InModule => transformedModules += m
+        case m: ExModule => {
+          m.info match {
+            case info: ExMemInfo => transformedModules ++= lowerExMem(m,info)
+            case info => transformedModules += m
+          }
+        }
+      }
+    }
+    Circuit(c.info,transformedModules,c.main)
   }
 }
