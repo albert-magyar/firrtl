@@ -40,7 +40,8 @@ trait Compiler extends LazyLogging {
 object SRAMCompiler extends Compiler {
   val passes = Seq(
     CInferTypes,
-    NoInlineMems
+    NoInlineMems,
+    LowerExMemTypes
   )
   def run(c: Circuit, w: Writer) = {
     val result = PassUtils.executePasses(c, passes)

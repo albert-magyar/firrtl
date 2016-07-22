@@ -305,36 +305,43 @@ object LowerExMemTypes extends Pass {
     Connect(NoInfo,
       MemUtils.deepField(a,field),
       MemUtils.deepField(b,field))
-  def adaptReader(aggPorts: DefWire, aggMem: DefMemory, groundMem: DefMemory, name: String): Stmt = {
+  def adaptReader(mname: String, name: String, aggType: Type, groundType: Type): Stmt = {
     val stmts = Seq(
-      Connect(NoInfo,MemUtils.deepField(mname,Seq(name,"clk")),MemUtils.deepField(name,Seq("clk")))
-      Connect(NoInfo,MemUtils.deepField(mname,Seq(name,"addr")),MemUtils.deepField(name,Seq("addr")))
-      Connect(NoInfo,MemUtils.deepField(mname,Seq(name,"en")),MemUtils.deepField(name,Seq("en")))
-      fromBits(MemUtils.deepField(name,Seq("data")).copy(tpe=aggMem.data_type),
-        MemUtils.deepField(groundMem.name,Seq(name,"data")).copy(tpe=groundMem.data_type))
+      Connect(NoInfo,MemUtils.deepField(mname,Seq(name,"clk")),MemUtils.deepField(name,Seq("clk"))),
+      Connect(NoInfo,MemUtils.deepField(mname,Seq(name,"addr")),MemUtils.deepField(name,Seq("addr"))),
+      Connect(NoInfo,MemUtils.deepField(mname,Seq(name,"en")),MemUtils.deepField(name,Seq("en"))),
+      fromBits(MemUtils.deepField(name,Seq("data")).copy(tpe=aggType),
+        MemUtils.deepField(mname,Seq(name,"data")).copy(tpe=groundType))
     )
     Begin(stmts)
   }
   def lowerExMem(exmem: ExModule, info: ExMemInfo, ns: Namespace): Seq[Module] = {
     assert(!(info.mem.data_type.isInstanceOf[UnknownType]))
-    val rconns = info.mem.readers.map(x => adaptReader(adapter, info.mem, simpleMem, x))
-    val wconns = info.mem.writers.map(x => adaptWriter(adapter, info.mem, simpleMem, x))
+    val groundType = UIntType(IntWidth(bitWidth(info.mem.data_type)))
+    val groundMem = info.mem.copy(data_type=groundType)
+    val groundPorts = MemUtils.memToBundle(groundMem)
+      .fields.map(f => Port(NoInfo, f.name, INPUT, f.tpe))
+    val newExmem = exmem.copy(info=ExMemInfo(groundMem),ports = groundPorts)
+    val newExinst = DefInstance(NoInfo,"inner",newExmem.name)
+    val rconns = info.mem.readers.map(x => adaptReader(exmem.name, x, info.mem.data_type, groundType))
     val adapter = InModule(
       info,
       ns.newName("mem_adapter"),
       exmem.ports,
-      Begin(rconns ++ wconns)
+      Begin(Seq(newExinst) ++ rconns)
     )
-    Seq(exmem,adapter)
+    Seq(newExmem,adapter)
   }
   def run(c: Circuit): Circuit = {
+    val moduleNS = Namespace()
+    c.modules.foreach(m => moduleNS.tryName(m.name))
     val transformedModules = ArrayBuffer[Module]()
     c.modules.foreach {
       m => m match {
         case m: InModule => transformedModules += m
         case m: ExModule => {
           m.info match {
-            case info: ExMemInfo => transformedModules ++= lowerExMem(m,info)
+            case info: ExMemInfo => transformedModules ++= lowerExMem(m,info,moduleNS)
             case info => transformedModules += m
           }
         }
