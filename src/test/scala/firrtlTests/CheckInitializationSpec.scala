@@ -25,64 +25,60 @@ TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR
 MODIFICATIONS.
 */
 
-package firrtl
+package firrtlTests
 
-import scala.collection.mutable.HashSet
-import firrtl.ir._
-import Mappers._
+import java.io._
+import org.scalatest._
+import org.scalatest.prop._
+import firrtl.Parser
+import firrtl.ir.Circuit
+import firrtl.Parser.IgnoreInfo
+import firrtl.passes._
 
-class Namespace private {
-  private val tempNamePrefix: String = "GEN"
-  // Begin with a tempNamePrefix in namespace so we always have a number suffix
-  private val namespace = HashSet[String](tempNamePrefix)
-  private var n = 0L
-
-  def tryName(value: String): Boolean = {
-    if (!namespace.contains(value)) {
-      namespace += value
-      true
-    } else {
-      false
-    }
-  }
-  def newName(value: String): String = {
-    var str = value
-    while (!tryName(str)) {
-      str = s"${value}_$n"
-      n += 1
-    }
-    str
-  }
-  def newTemp: String = newName(tempNamePrefix)
-}
-
-object Namespace {
-  def apply(): Namespace = new Namespace
-
-  // Initializes a namespace from a Module
-  def apply(m: DefModule): Namespace = {
-    val namespace = new Namespace
-
-    def buildNamespaceStmt(s: Statement): Statement =
-      s map buildNamespaceStmt match {
-        case dec: IsDeclaration =>
-          namespace.namespace += dec.name
-          dec
-        case x => x
+class CheckInitializationSpec extends FirrtlFlatSpec {
+  private def parse(input: String) = Parser.parse(input.split("\n").toIterator, IgnoreInfo)
+  private val passes = Seq(
+     ToWorkingIR,
+     CheckHighForm,
+     ResolveKinds,
+     InferTypes,
+     CheckTypes,
+     ResolveGenders,
+     CheckGenders,
+     InferWidths,
+     CheckWidths,
+     PullMuxes,
+     ExpandConnects,
+     RemoveAccesses,
+     ExpandWhens,
+     CheckInitialization)
+  "Missing assignment in consequence branch" should "trigger a PassException" in {
+    val input =
+      """circuit Test :
+        |  module Test :
+        |    input p : UInt<1>
+        |    wire x : UInt<32>
+        |    when p :
+        |      x <= UInt(1)""".stripMargin
+    intercept[PassExceptions] {
+      passes.foldLeft(parse(input)) {
+        (c: Circuit, p: Pass) => p.run(c)
       }
-    def buildNamespacePort(p: Port): Port = p match {
-      case dec: IsDeclaration =>
-        namespace.namespace += dec.name
-        dec
-      case x => x
     }
-    m.ports map buildNamespacePort
-    m match {
-      case in: Module => buildNamespaceStmt(in.body)
-      case _ => // Do nothing
+  }
+  "Missing assignment in alternative branch" should "trigger a PassException" in {
+    val input =
+      """circuit Test :
+        |  module Test :
+        |    input p : UInt<1>
+        |    wire x : UInt<32>
+        |    when p :
+        |    else :
+        |      x <= UInt(1)""".stripMargin
+    intercept[PassExceptions] {
+      passes.foldLeft(parse(input)) {
+        (c: Circuit, p: Pass) => p.run(c)
+      }
     }
-
-    namespace
   }
 }
-

@@ -25,64 +25,16 @@ TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR
 MODIFICATIONS.
 */
 
-package firrtl
+package firrtlTests
 
-import scala.collection.mutable.HashSet
-import firrtl.ir._
-import Mappers._
+import java.io._
+import org.scalatest._
+import org.scalatest.prop._
+import firrtl._
+import firrtl.passes._
 
-class Namespace private {
-  private val tempNamePrefix: String = "GEN"
-  // Begin with a tempNamePrefix in namespace so we always have a number suffix
-  private val namespace = HashSet[String](tempNamePrefix)
-  private var n = 0L
-
-  def tryName(value: String): Boolean = {
-    if (!namespace.contains(value)) {
-      namespace += value
-      true
-    } else {
-      false
-    }
-  }
-  def newName(value: String): String = {
-    var str = value
-    while (!tryName(str)) {
-      str = s"${value}_$n"
-      n += 1
-    }
-    str
-  }
-  def newTemp: String = newName(tempNamePrefix)
-}
-
-object Namespace {
-  def apply(): Namespace = new Namespace
-
-  // Initializes a namespace from a Module
-  def apply(m: DefModule): Namespace = {
-    val namespace = new Namespace
-
-    def buildNamespaceStmt(s: Statement): Statement =
-      s map buildNamespaceStmt match {
-        case dec: IsDeclaration =>
-          namespace.namespace += dec.name
-          dec
-        case x => x
-      }
-    def buildNamespacePort(p: Port): Port = p match {
-      case dec: IsDeclaration =>
-        namespace.namespace += dec.name
-        dec
-      case x => x
-    }
-    m.ports map buildNamespacePort
-    m match {
-      case in: Module => buildNamespaceStmt(in.body)
-      case _ => // Do nothing
-    }
-
-    namespace
+class ExpandWhensSpec extends FirrtlFlatSpec {
+  "Expand Whens" should "compile and run" in {
+    runFirrtlTest("ExpandWhens", "/passes/ExpandWhens")
   }
 }
-

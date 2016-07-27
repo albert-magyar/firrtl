@@ -29,9 +29,11 @@ package firrtlTests
 
 import java.io._
 
+import com.typesafe.scalalogging.LazyLogging
 import scala.sys.process._
 import org.scalatest._
 import org.scalatest.prop._
+import scala.io.Source
 
 import firrtl._
 
@@ -100,6 +102,7 @@ trait BackendCompilationUtilities {
             "--Wno-fatal",
             "--trace",
             "-O2",
+            "--top-module", dutFile,
             "+define+TOP_TYPE=V" + dutFile,
             "-CFLAGS", s"""-Wno-undefined-bool-conversion -O2 -DTOP_TYPE=V$dutFile -include V$dutFile.h""",
             "-Mdir", dir.toString,
@@ -128,15 +131,26 @@ trait BackendCompilationUtilities {
 
 trait FirrtlRunners extends BackendCompilationUtilities {
   lazy val cppHarness = new File(s"/top.cpp")
-  def compileFirrtlTest(prefix: String, srcDir: String): File = {
+  def compileFirrtlTest(
+      prefix: String,
+      srcDir: String,
+      annotations: Seq[CircuitAnnotation] = Seq.empty): File = {
     val testDir = createTempDirectory(prefix)
     copyResourceToFile(s"${srcDir}/${prefix}.fir", new File(testDir, s"${prefix}.fir"))
-    
-    Driver.compile(s"${testDir}/${prefix}.fir", s"${testDir}/${prefix}.v", VerilogCompiler)
+
+    Driver.compile(
+      s"$testDir/$prefix.fir",
+      s"$testDir/$prefix.v",
+      new VerilogCompiler(),
+      Parser.IgnoreInfo,
+      annotations)
     testDir
   }
-  def runFirrtlTest(prefix: String, srcDir: String) {
-    val testDir = compileFirrtlTest(prefix, srcDir)
+  def runFirrtlTest(
+      prefix: String,
+      srcDir: String,
+      annotations: Seq[CircuitAnnotation] = Seq.empty) = {
+    val testDir = compileFirrtlTest(prefix, srcDir, annotations)
     val harness = new File(testDir, s"top.cpp")
     copyResourceToFile(cppHarness.toString, harness)
 
@@ -146,7 +160,17 @@ trait FirrtlRunners extends BackendCompilationUtilities {
   }
 }
 
-class FirrtlPropSpec extends PropSpec with PropertyChecks with FirrtlRunners
+trait FirrtlMatchers {
+  // Replace all whitespace with a single space and remove leading and
+  //   trailing whitespace
+  // Note this is intended for single-line strings, no newlines
+  def normalized(s: String): String = {
+    require(!s.contains("\n"))
+    s.replaceAll("\\s+", " ").trim
+  }
+}
 
-class FirrtlFlatSpec extends FlatSpec with Matchers
+class FirrtlPropSpec extends PropSpec with PropertyChecks with FirrtlRunners with LazyLogging
+
+class FirrtlFlatSpec extends FlatSpec with Matchers with FirrtlRunners with FirrtlMatchers with LazyLogging
 

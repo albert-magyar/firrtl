@@ -35,6 +35,7 @@ import scala.collection.mutable.HashMap
 import scala.collection.mutable.ArrayBuffer
 
 import firrtl._
+import firrtl.ir._
 import firrtl.Utils._
 import firrtl.Mappers._
 import firrtl.Serialize._
@@ -44,7 +45,7 @@ import firrtl.WrappedExpression._
 object toBits {
   def apply(e: Expression): Expression = {
     e match {
-      case ex: Ref => hiercat(ex,ex.tpe)
+      case ex: Reference => hiercat(ex,ex.tpe)
       case ex: SubField => hiercat(ex,ex.tpe)
       case ex: SubIndex => hiercat(ex,ex.tpe)
       case t => error("Invalid operand expression for toBits!")
@@ -52,8 +53,8 @@ object toBits {
   }
   def hiercat(e: Expression, dt: Type): Expression = {
     dt match {
-      case t:VectorType => DoPrim(CONCAT_OP, (0 to t.size).map(i => hiercat(SubIndex(e, i, t.tpe),t.tpe)), Seq.empty[BigInt], UnknownType())
-      case t:BundleType => DoPrim(CONCAT_OP, t.fields.map(f => hiercat(SubField(e, f.name, f.tpe),f.tpe)), Seq.empty[BigInt], UnknownType())
+      case t:VectorType => DoPrim(PrimOps.Cat, (0 to t.size).map(i => hiercat(SubIndex(e, i, t.tpe),t.tpe)), Seq.empty[BigInt], UnknownType)
+      case t:BundleType => DoPrim(PrimOps.Cat, t.fields.map(f => hiercat(SubField(e, f.name, f.tpe),f.tpe)), Seq.empty[BigInt], UnknownType)
       case t:UIntType => e
       case t:SIntType => e
       case t => error("Unknown type encountered in toBits!")
@@ -81,25 +82,25 @@ object bitWidth {
 }
 
 object fromBits {
-  def apply(lhs: Expression, rhs: Expression): Stmt = {
+  def apply(lhs: Expression, rhs: Expression): Statement = {
     val fbits = lhs match {
-      case ex: Ref => getPart(ex,ex.tpe,rhs,0)
+      case ex: Reference => getPart(ex,ex.tpe,rhs,0)
       case ex: SubField => getPart(ex,ex.tpe,rhs,0)
       case ex: SubIndex => getPart(ex,ex.tpe,rhs,0)
       case t => error("Invalid LHS expression for fromBits!")
     }
-    Begin(fbits._2)
+    Block(fbits._2)
   }
-  def getPartGround(lhs: Expression, lhst: Type, rhs: Expression, offset: BigInt): (BigInt, Seq[Stmt]) = {
+  def getPartGround(lhs: Expression, lhst: Type, rhs: Expression, offset: BigInt): (BigInt, Seq[Statement]) = {
     val intWidth = bitWidth(lhst)
-    val sel = DoPrim(BITS_SELECT_OP,Seq(rhs),Seq(offset+intWidth-1,offset),UnknownType())
+    val sel = DoPrim(PrimOps.Bits,Seq(rhs),Seq(offset+intWidth-1,offset),UnknownType)
     (offset + intWidth, Seq(Connect(NoInfo,lhs,sel)))
   }
-  def getPart(lhs: Expression, lhst: Type, rhs: Expression, offset: BigInt): (BigInt, Seq[Stmt]) = {
+  def getPart(lhs: Expression, lhst: Type, rhs: Expression, offset: BigInt): (BigInt, Seq[Statement]) = {
     lhst match {
       case t:VectorType => {
         var currentOffset = offset
-        var stmts = Seq.empty[Stmt]
+        var stmts = Seq.empty[Statement]
         for (i <- (0 to t.size)) {
           val (tmpOffset, substmts) = getPart(SubIndex(lhs, i, t.tpe), t.tpe, rhs, currentOffset)
           stmts = stmts ++ substmts
@@ -109,7 +110,7 @@ object fromBits {
       }
       case t:BundleType => {
         var currentOffset = offset
-        var stmts = Seq.empty[Stmt]
+        var stmts = Seq.empty[Statement]
         for (f <- t.fields.reverse) {
           println("Resolving field " + f.name)
           val (tmpOffset, substmts) = getPart(SubField(lhs, f.name, f.tpe), f.tpe, rhs, currentOffset)
@@ -128,47 +129,47 @@ object fromBits {
 object MemUtils {
   def rPortToBundle(name: String, mem: DefMemory) =
     BundleType(Seq(
-      Field("data", REVERSE, mem.data_type),
-      Field("addr", DEFAULT, UIntType(IntWidth(ceil_log2(mem.depth)))),
-      Field("en", DEFAULT, UIntType(IntWidth(1))),
-      Field("clk", DEFAULT, ClockType())))
+      Field("data", Flip, mem.dataType),
+      Field("addr", Default, UIntType(IntWidth(ceil_log2(mem.depth)))),
+      Field("en", Default, UIntType(IntWidth(1))),
+      Field("clk", Default, ClockType)))
   def wPortToBundle(name: String, mem: DefMemory) =
     BundleType(Seq(
-      Field("data", DEFAULT, mem.data_type),
-      Field("mask", DEFAULT, create_mask(mem.data_type)),
-      Field("addr", DEFAULT, UIntType(IntWidth(ceil_log2(mem.depth)))),
-      Field("en", DEFAULT, UIntType(IntWidth(1))),
-      Field("clk", DEFAULT, ClockType())))
+      Field("data", Default, mem.dataType),
+      Field("mask", Default, create_mask(mem.dataType)),
+      Field("addr", Default, UIntType(IntWidth(ceil_log2(mem.depth)))),
+      Field("en", Default, UIntType(IntWidth(1))),
+      Field("clk", Default, ClockType)))
   def rwPortToBundle(name: String, mem: DefMemory) =
     BundleType(Seq(
-      Field("rmode", DEFAULT, UIntType(IntWidth(1))),
-      Field("data", DEFAULT, mem.data_type),
-      Field("rdata", REVERSE, mem.data_type),
-      Field("mask", DEFAULT, create_mask(mem.data_type)),
-      Field("addr", DEFAULT, UIntType(IntWidth(ceil_log2(mem.depth)))),
-      Field("en", DEFAULT, UIntType(IntWidth(1))),
-      Field("clk", DEFAULT, ClockType())))
+      Field("rmode", Default, UIntType(IntWidth(1))),
+      Field("data", Default, mem.dataType),
+      Field("rdata", Flip, mem.dataType),
+      Field("mask", Default, create_mask(mem.dataType)),
+      Field("addr", Default, UIntType(IntWidth(ceil_log2(mem.depth)))),
+      Field("en", Default, UIntType(IntWidth(1))),
+      Field("clk", Default, ClockType)))
   def memToBundle(s: DefMemory) = BundleType(
-    s.readers.map(p => Field(p, DEFAULT, rPortToBundle(p,s))) ++
-      s.writers.map(p => Field(p, DEFAULT, wPortToBundle(p,s))) ++
-      s.readwriters.map(p => Field(p, DEFAULT, rwPortToBundle(p,s))))
+    s.readers.map(p => Field(p, Default, rPortToBundle(p,s))) ++
+      s.writers.map(p => Field(p, Default, wPortToBundle(p,s))) ++
+      s.readwriters.map(p => Field(p, Default, rwPortToBundle(p,s))))
   def deepField(wire: String, fieldChain: Seq[String]): SubField = {
     if (fieldChain.length == 1) {
-      SubField(Ref(wire, UnknownType()), fieldChain.last, UnknownType())
+      SubField(Reference(wire, UnknownType), fieldChain.last, UnknownType)
     } else {
-      SubField(deepField(wire, fieldChain.init), fieldChain.last, UnknownType())
+      SubField(deepField(wire, fieldChain.init), fieldChain.last, UnknownType)
     }
   }
   // TODO: this is totally wrong
-  def bulkConnect(a: String, b: String) = BulkConnect(
+  def bulkConnect(a: String, b: String) = Connect(
     NoInfo,
-    Ref(a, UnknownType()),
-    Ref(b, UnknownType()))
+    Reference(a, UnknownType),
+    Reference(b, UnknownType))
 }
 
 object ModularizeMems extends Pass {
   def name = "ModularizeMems"
-  def memAdapters = LinkedHashSet[InModule]()
+  def memAdapters = LinkedHashSet[DefModule]()
   def run(c: Circuit) = c
 }
 
@@ -178,48 +179,48 @@ object LowerMemTypes extends Pass {
     Connect(NoInfo,
       MemUtils.deepField(a,field),
       MemUtils.deepField(b,field))
-  def adaptReader(aggPorts: DefWire, aggMem: DefMemory, groundMem: DefMemory, name: String): Stmt = {
+  def adaptReader(aggPorts: DefWire, aggMem: DefMemory, groundMem: DefMemory, name: String): Statement = {
     val stmts = Seq(
       connectField(groundMem.name,aggPorts.name,Seq(name,"addr")),
       connectField(groundMem.name,aggPorts.name,Seq(name,"en")),
       connectField(groundMem.name,aggPorts.name,Seq(name,"clk")),
-      fromBits(MemUtils.deepField(aggPorts.name,Seq(name,"data")).copy(tpe=aggMem.data_type),
-        MemUtils.deepField(groundMem.name,Seq(name,"data")).copy(tpe=groundMem.data_type))
+      fromBits(MemUtils.deepField(aggPorts.name,Seq(name,"data")).copy(tpe=aggMem.dataType),
+        MemUtils.deepField(groundMem.name,Seq(name,"data")).copy(tpe=groundMem.dataType))
     )
-    Begin(stmts)
+    Block(stmts)
   }
-  def adaptWriter(aggPorts: DefWire, aggMem: DefMemory, groundMem: DefMemory, name: String): Stmt = {
+  def adaptWriter(aggPorts: DefWire, aggMem: DefMemory, groundMem: DefMemory, name: String): Statement = {
     val stmts = Seq(
       connectField(groundMem.name,aggPorts.name,Seq(name,"addr")),
       connectField(groundMem.name,aggPorts.name,Seq(name,"en")),
       connectField(groundMem.name,aggPorts.name,Seq(name,"clk")),
       Connect(NoInfo,
         MemUtils.deepField(groundMem.name,Seq(name,"data")),
-        toBits(MemUtils.deepField(aggPorts.name,Seq(name,"data")).copy(tpe=aggMem.data_type)))
+        toBits(MemUtils.deepField(aggPorts.name,Seq(name,"data")).copy(tpe=aggMem.dataType)))
     )
-    Begin(stmts)
+    Block(stmts)
   }
-  def lowerMem(s: DefMemory, ns: Namespace): Stmt = {
-    assert(!(s.data_type.isInstanceOf[UnknownType]))
+  def lowerMem(s: DefMemory, ns: Namespace): Statement = {
+    assert(s.dataType != UnknownType)
     val adapter = DefWire(s.info, s.name, MemUtils.memToBundle(s))
-    val simpleMem = s.copy(name=ns.newName(s.name), data_type=UIntType(IntWidth(bitWidth(s.data_type))))
+    val simpleMem = s.copy(name=ns.newName(s.name), dataType=UIntType(IntWidth(bitWidth(s.dataType))))
     val rconns = s.readers.map(x => adaptReader(adapter, s, simpleMem, x))
     val wconns = s.writers.map(x => adaptWriter(adapter, s, simpleMem, x))
-    Begin(Seq(adapter,simpleMem) ++ rconns ++ wconns)
+    Block(Seq(adapter,simpleMem) ++ rconns ++ wconns)
   }
-  def transformMems(s: Stmt, ns: Namespace): Stmt = s match {
+  def transformMems(s: Statement, ns: Namespace): Statement = s match {
     case s: DefMemory => lowerMem(s,ns)
-    case s => s map ((x: Stmt) => transformMems(x,ns))
+    case s => s map ((x: Statement) => transformMems(x,ns))
   }
   def run(c: Circuit): Circuit = {
     val transformedModules = c.modules.map {
       m => m match {
-        case m: InModule => {
+        case m: Module => {
           val ns = Namespace(m)
           val transformedBody = transformMems(m.body,ns)
-          InModule(m.info, m.name, m.ports, transformedBody)
+          Module(m.info, m.name, m.ports, transformedBody)
         }
-        case m: ExModule => m
+        case m: ExtModule => m
       }
     }
     Circuit(c.info,transformedModules,c.main)
@@ -228,7 +229,7 @@ object LowerMemTypes extends Pass {
 
 object CanonicalizeMemPorts extends Pass {
   def name = "CanonicalizeMemPorts"
-  def simplifyMem(s: DefMemory, ns: Namespace): Stmt = {
+  def simplifyMem(s: DefMemory, ns: Namespace): Statement = {
     val rp = s.readers.zipWithIndex.map("r" + _._2)
     val wp = s.writers.zipWithIndex.map("w" + _._2)
     val rwp = s.readwriters.zipWithIndex.map("rw" + _._2)
@@ -241,71 +242,38 @@ object CanonicalizeMemPorts extends Pass {
     val rwconn = (rwp, s.readwriters).zipped.map((a,b) => MemUtils.bulkConnect(simpleMem.name + "." + a,
       adapter.name + "." + b))
     val block = Seq(adapter, simpleMem) ++ rconn ++ wconn ++ rwconn
-    return Begin(block)
+    return Block(block)
   }
-  def transformMems(s: Stmt, ns: Namespace): Stmt = s match {
+  def transformMems(s: Statement, ns: Namespace): Statement = s match {
     case s: DefMemory => simplifyMem(s,ns)
-    case s => s map ((x: Stmt) => transformMems(x,ns))
+    case s => s map ((x: Statement) => transformMems(x,ns))
   }
   def run(c: Circuit): Circuit = {
     val transformedModules = c.modules.map {
       m => m match {
-        case m: InModule => {
+        case m: Module => {
           val ns = Namespace(m)
           val transformedBody = transformMems(m.body,ns)
-          InModule(m.info, m.name, m.ports, transformedBody)
+          Module(m.info, m.name, m.ports, transformedBody)
         }
-        case m: ExModule => m
+        case m: ExtModule => m
       }
     }
     Circuit(c.info,transformedModules,c.main)
   }
 }
 
-case class ExMemInfo(mem: DefMemory) extends Info {
-  override def toString = "Generated ExMem"
+case class ExtMemInfo(mem: DefMemory) extends Info {
+  override def toString = "Generated ExtMem"
 }
 
-object NoInlineMems extends Pass {
-  def name = "NoInlineMems"
-  def run(c: Circuit): Circuit = {
-    val exMems = LinkedHashMap[DefMemory,String]()
-    val moduleNS = Namespace()
-    c.modules.foreach(m => moduleNS.tryName(m.name))
-    def transformMems(s: Stmt): Stmt = s match {
-      case s: DefMemory => {
-        val memModuleName = exMems.getOrElseUpdate(s.copy(info=NoInfo,name=""),
-          moduleNS.newName("mem"))
-        DefInstance(s.info, s.name, memModuleName)
-      }
-      case s => s map (transformMems)
-    }
-    val transformedModules = c.modules.map {
-      m => m match {
-        case m: InModule => {
-          val transformedBody = transformMems(m.body)
-          InModule(m.info, m.name, m.ports, transformedBody)
-        }
-        case m: ExModule => m
-      } 
-    }
-    val memExModules = exMems map {
-      case (k,v) => {
-        val ioPorts = MemUtils.memToBundle(k).fields.map(f => Port(NoInfo, f.name, INPUT, f.tpe))
-        ExModule(ExMemInfo(k), v, ioPorts)
-      }
-    }
-    Circuit(c.info, transformedModules ++ memExModules, c.main)
-  }
-}
-
-object LowerExMemTypes extends Pass {
-  def name = "LowerExMemTypes"
+object LowerExtMemTypes extends Pass {
+  def name = "LowerExtMemTypes"
   def connectField(a: String, b: String, field: Seq[String]) =
     Connect(NoInfo,
       MemUtils.deepField(a,field),
       MemUtils.deepField(b,field))
-  def adaptReader(mname: String, name: String, aggType: Type, groundType: Type): Stmt = {
+  def adaptReader(mname: String, name: String, aggType: Type, groundType: Type): Statement = {
     val stmts = Seq(
       Connect(NoInfo,MemUtils.deepField(mname,Seq(name,"clk")),MemUtils.deepField(name,Seq("clk"))),
       Connect(NoInfo,MemUtils.deepField(mname,Seq(name,"addr")),MemUtils.deepField(name,Seq("addr"))),
@@ -313,40 +281,112 @@ object LowerExMemTypes extends Pass {
       fromBits(MemUtils.deepField(name,Seq("data")).copy(tpe=aggType),
         MemUtils.deepField(mname,Seq(name,"data")).copy(tpe=groundType))
     )
-    Begin(stmts)
+    Block(stmts)
   }
-  def lowerExMem(exmem: ExModule, info: ExMemInfo, ns: Namespace): Seq[Module] = {
-    assert(!(info.mem.data_type.isInstanceOf[UnknownType]))
-    val groundType = UIntType(IntWidth(bitWidth(info.mem.data_type)))
-    val groundMem = info.mem.copy(data_type=groundType)
+  def lowerExtMem(extMem: ExtModule, info: ExtMemInfo, ns: Namespace): Seq[DefModule] = {
+    assert(info.mem.dataType != UnknownType)
+    val groundType = UIntType(IntWidth(bitWidth(info.mem.dataType)))
+    val groundMem = info.mem.copy(dataType=groundType)
     val groundPorts = MemUtils.memToBundle(groundMem)
-      .fields.map(f => Port(NoInfo, f.name, INPUT, f.tpe))
-    val newExmem = exmem.copy(info=ExMemInfo(groundMem),ports = groundPorts)
-    val newExinst = DefInstance(NoInfo,"inner",newExmem.name)
-    val rconns = info.mem.readers.map(x => adaptReader(exmem.name, x, info.mem.data_type, groundType))
-    val adapter = InModule(
+      .fields.map(f => Port(NoInfo, f.name, Input, f.tpe))
+    val newExtMem = extMem.copy(info=ExtMemInfo(groundMem),ports = groundPorts)
+    val newExinst = DefInstance(NoInfo,"inner",newExtMem.name)
+    val rconns = info.mem.readers.map(x => adaptReader(extMem.name, x, info.mem.dataType, groundType))
+    val adapter = Module(
       info,
       ns.newName("mem_adapter"),
-      exmem.ports,
-      Begin(Seq(newExinst) ++ rconns)
+      extMem.ports,
+      Block(Seq(newExinst) ++ rconns)
     )
-    Seq(newExmem,adapter)
+    Seq(newExtMem,adapter)
   }
   def run(c: Circuit): Circuit = {
     val moduleNS = Namespace()
     c.modules.foreach(m => moduleNS.tryName(m.name))
-    val transformedModules = ArrayBuffer[Module]()
+    val transformedModules = ArrayBuffer[DefModule]()
     c.modules.foreach {
       m => m match {
-        case m: InModule => transformedModules += m
-        case m: ExModule => {
+        case m: Module => transformedModules += m
+        case m: ExtModule => {
           m.info match {
-            case info: ExMemInfo => transformedModules ++= lowerExMem(m,info,moduleNS)
+            case info: ExtMemInfo => transformedModules ++= lowerExtMem(m,info,moduleNS)
             case info => transformedModules += m
           }
         }
       }
     }
     Circuit(c.info,transformedModules,c.main)
+  }
+}
+
+object NoInlineMems extends Pass {
+  def name = "NoInlineMems"
+  def connectField(lhs: Expression, rhs: Expression, field: String) =
+    Connect(NoInfo,
+      SubField(lhs,field,UnknownType),
+      SubField(rhs,field,UnknownType))
+  def adaptReader(aggPort: Expression, aggMem: DefMemory, groundPort: Expression, groundMem: DefMemory): Statement = {
+    val stmts = Seq(
+      connectField(groundPort,aggPort,"addr"),
+      connectField(groundPort,aggPort,"en"),
+      connectField(groundPort,aggPort,"clk"),
+      fromBits(SubField(aggPort,"data",aggMem.dataType),SubField(groundPort,"data",groundMem.dataType))
+    )
+    Block(stmts)
+  }
+  def adaptWriter(aggPort: Expression, aggMem: DefMemory, groundPort: Expression, groundMem: DefMemory): Statement = {
+    val stmts = Seq(
+      connectField(groundPort,aggPort,"addr"),
+      connectField(groundPort,aggPort,"en"),
+      connectField(groundPort,aggPort,"clk"),
+      Connect(NoInfo,
+        SubField(groundPort,"data",groundMem.dataType),
+        toBits(SubField(aggPort,"data",aggMem.dataType)))
+    )
+    Block(stmts)
+  }
+  def run(c: Circuit): Circuit = {
+    val memWrappers = LinkedHashMap[DefMemory,String]()
+    val memBlackboxes = LinkedHashMap[DefMemory,String]()
+    val moduleNS = Namespace()
+    c.modules.foreach(m => moduleNS.tryName(m.name))
+    def transformMems(s: Statement): Statement = s match {
+      case s: DefMemory => {
+        val memWrapperName = memWrappers.getOrElseUpdate(s.copy(),
+          moduleNS.newName("mem_wrapper"))
+        DefInstance(s.info, s.name, memWrapperName)
+      }
+      case s => s map (transformMems)
+    }
+    val transformedModules = c.modules.map {
+      m => m match {
+        case m: Module => {
+          val transformedBody = transformMems(m.body)
+          Module(m.info, m.name, m.ports, transformedBody)
+        }
+        case m: ExtModule => m
+      } 
+    }
+    val memWrapperModules = memWrappers map {
+      case (k,v) => {
+        assert(k.dataType != UnknownType)
+        val ioPorts = MemUtils.memToBundle(k).fields.map(f => Port(NoInfo, f.name, Input, f.tpe))
+        val loweredMem = k.copy(dataType=UIntType(IntWidth(bitWidth(k.dataType))))
+        val memBlackboxName = memBlackboxes.getOrElseUpdate(loweredMem.copy(),
+          moduleNS.newName("mem_blackbox"))
+        val bbInst = DefInstance(k.info, k.name, memBlackboxName)
+        val bbRef = Reference(bbInst.name,UnknownType)
+        val rconns = k.readers.map(x => adaptReader(Reference(x, UnknownType), k, SubField(bbRef,x,UnknownType), loweredMem))
+        val wconns = k.writers.map(x => adaptWriter(Reference(x, UnknownType), k, SubField(bbRef,x,UnknownType), loweredMem))
+        Module(ExtMemInfo(k), v, ioPorts, Block(Seq(bbInst) ++ rconns ++ wconns))
+      }
+    }
+    val memBlackboxModules = memBlackboxes map {
+      case (k,v) => {
+        val ioPorts = MemUtils.memToBundle(k).fields.map(f => Port(NoInfo, f.name, Input, f.tpe))
+        ExtModule(ExtMemInfo(k), v, ioPorts)
+      }
+    }
+    Circuit(c.info, transformedModules ++ memWrapperModules ++ memBlackboxModules, c.main)
   }
 }

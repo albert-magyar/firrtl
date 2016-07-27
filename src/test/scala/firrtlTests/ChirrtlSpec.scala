@@ -25,64 +25,55 @@ TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR
 MODIFICATIONS.
 */
 
-package firrtl
+package firrtlTests
 
-import scala.collection.mutable.HashSet
-import firrtl.ir._
-import Mappers._
+import java.io._
+import org.scalatest._
+import org.scalatest.prop._
+import firrtl.Parser
+import firrtl.ir.Circuit
+import firrtl.passes._
 
-class Namespace private {
-  private val tempNamePrefix: String = "GEN"
-  // Begin with a tempNamePrefix in namespace so we always have a number suffix
-  private val namespace = HashSet[String](tempNamePrefix)
-  private var n = 0L
+class ChirrtlSpec extends FirrtlFlatSpec {
 
-  def tryName(value: String): Boolean = {
-    if (!namespace.contains(value)) {
-      namespace += value
-      true
-    } else {
-      false
+  "Chirrtl memories" should "allow ports with clocks defined after the memory" in {
+    val passes = Seq(
+      CInferTypes,
+      CInferMDir,
+      RemoveCHIRRTL,
+      ToWorkingIR,            
+      CheckHighForm,
+      ResolveKinds,
+      InferTypes,
+      CheckTypes,
+      ResolveGenders,
+      CheckGenders,
+      InferWidths,
+      CheckWidths,
+      PullMuxes,
+      ExpandConnects,
+      RemoveAccesses,
+      ExpandWhens,
+      CheckInitialization
+    )
+    val input =
+     """circuit Unit :
+       |  module Unit :
+       |    input clk : Clock
+       |    smem ram : UInt<32>[128]
+       |    node newClock = clk
+       |    infer mport x = ram[UInt(2)], newClock
+       |    x <= UInt(3)
+       |    when UInt(1) :
+       |      infer mport y = ram[UInt(4)], newClock
+       |      y <= UInt(5)
+       """.stripMargin
+    passes.foldLeft(Parser.parse(input.split("\n").toIterator)) {
+      (c: Circuit, p: Pass) => p.run(c)
     }
   }
-  def newName(value: String): String = {
-    var str = value
-    while (!tryName(str)) {
-      str = s"${value}_$n"
-      n += 1
-    }
-    str
-  }
-  def newTemp: String = newName(tempNamePrefix)
-}
 
-object Namespace {
-  def apply(): Namespace = new Namespace
-
-  // Initializes a namespace from a Module
-  def apply(m: DefModule): Namespace = {
-    val namespace = new Namespace
-
-    def buildNamespaceStmt(s: Statement): Statement =
-      s map buildNamespaceStmt match {
-        case dec: IsDeclaration =>
-          namespace.namespace += dec.name
-          dec
-        case x => x
-      }
-    def buildNamespacePort(p: Port): Port = p match {
-      case dec: IsDeclaration =>
-        namespace.namespace += dec.name
-        dec
-      case x => x
-    }
-    m.ports map buildNamespacePort
-    m match {
-      case in: Module => buildNamespaceStmt(in.body)
-      case _ => // Do nothing
-    }
-
-    namespace
+  it should "compile and run" in {
+    runFirrtlTest("ChirrtlMems", "/features")
   }
 }
-
