@@ -158,8 +158,8 @@ case class ExtMemInfo(mem: DefMemory) extends Info {
   override def toString = "Generated memory wrapper"
 }
 
-object NoInlineMems extends Pass {
-  def name = "NoInlineMems"
+object NoInlineMem extends Pass {
+  def name = "NoInlineMem"
   def connectField(lhs: Expression, rhs: Expression, field: String) =
     Connect(NoInfo,
       SubField(lhs,field,UnknownType),
@@ -225,6 +225,8 @@ object NoInlineMems extends Pass {
     val memBlackboxModules = memBlackboxes map {
       case (k,v) => {
         val ioPorts = MemUtils.memToBundle(k).fields.map(f => Port(NoInfo, f.name, Input, f.tpe))
+        val confPorts = (k.readers.map(x => "r") ++ k.writers.map(x => "w")).mkString(",")
+        println(s"name ${k.name} depth ${k.depth} width ${bitWidth(k.dataType)} ports ${confPorts}")
         ExtModule(ExtMemInfo(k), v, ioPorts)
       }
     }
