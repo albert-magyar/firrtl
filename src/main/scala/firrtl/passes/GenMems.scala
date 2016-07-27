@@ -210,13 +210,15 @@ object NoInlineMems extends Pass {
       case (k,v) => {
         assert(k.dataType != UnknownType)
         val ioPorts = MemUtils.memToBundle(k).fields.map(f => Port(NoInfo, f.name, Input, f.tpe))
-        val loweredMem = k.copy(dataType=UIntType(IntWidth(bitWidth(k.dataType))))
+        val loweredMem = k.copy(dataType=UIntType(IntWidth(bitWidth(k.dataType))),
+          readers=k.readers.zipWithIndex.map{ case (x,i) => s"R$i" },
+          writers=k.writers.zipWithIndex.map{ case (x,i) => s"W$i" })
         val memBlackboxName = memBlackboxes.getOrElseUpdate(loweredMem.copy(),
           moduleNS.newName("mem_blackbox"))
         val bbInst = DefInstance(k.info, k.name, memBlackboxName)
         val bbRef = Reference(bbInst.name,UnknownType)
-        val rconns = k.readers.map(x => adaptReader(Reference(x, UnknownType), k, SubField(bbRef,x,UnknownType), loweredMem))
-        val wconns = k.writers.map(x => adaptWriter(Reference(x, UnknownType), k, SubField(bbRef,x,UnknownType), loweredMem))
+        val rconns = (k.readers zip loweredMem.readers).map{ case (x,y) => adaptReader(Reference(x, UnknownType), k, SubField(bbRef,y,UnknownType), loweredMem) }
+        val wconns = (k.writers zip loweredMem.writers).map{ case (x,y) => adaptWriter(Reference(x, UnknownType), k, SubField(bbRef,y,UnknownType), loweredMem) }
         Module(ExtMemInfo(k), v, ioPorts, Block(Seq(bbInst) ++ rconns ++ wconns))
       }
     }
