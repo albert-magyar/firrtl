@@ -53,11 +53,37 @@ object toBits {
   }
   def hiercat(e: Expression, dt: Type): Expression = {
     dt match {
-      case t:VectorType => DoPrim(PrimOps.Cat, (0 to t.size).map(i => hiercat(SubIndex(e, i, t.tpe),t.tpe)), Seq.empty[BigInt], UnknownType)
-      case t:BundleType => DoPrim(PrimOps.Cat, t.fields.map(f => hiercat(SubField(e, f.name, f.tpe),f.tpe)), Seq.empty[BigInt], UnknownType)
+      case t:VectorType => DoPrim(PrimOps.Cat, (0 to t.size).map(i => hiercat(SubIndex(e, i, t.tpe),t.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
+      case t:BundleType => DoPrim(PrimOps.Cat, t.fields.map(f => hiercat(SubField(e, f.name, f.tpe),f.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
       case t:UIntType => e
       case t:SIntType => e
       case t => error("Unknown type encountered in toBits!")
+    }
+  }
+}
+
+object toBitMask {
+  def apply(e: Expression, dataType: Type): Expression = {
+    e match {
+      case ex: Reference => hiermask(ex,ex.tpe,dataType)
+      case ex: SubField => hiermask(ex,ex.tpe,dataType)
+      case ex: SubIndex => hiermask(ex,ex.tpe,dataType)
+      case t => error("Invalid operand expression for toBits!")
+    }
+  }
+  def hiermask(e: Expression, maskType: Type, dataType: Type): Expression = {
+    (maskType, dataType) match {
+      case (mt:VectorType, dt:VectorType) => DoPrim(PrimOps.Cat, (0 to mt.size).map(i => hiermask(SubIndex(e, i, mt.tpe), mt.tpe, dt.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
+      case (mt:BundleType, dt:BundleType) => DoPrim(PrimOps.Cat, (mt.fields zip dt.fields).map{ case (mf,df) => hiermask(SubField(e, mf.name, mf.tpe), mf.tpe, df.tpe) }, Seq.empty[BigInt], UIntType(UnknownWidth))
+      case (mt:UIntType, dt) => groundBitMask(e, dt)
+      case (mt, dt) => error("Invalid type for mask component!")
+    }
+  }
+  def groundBitMask(e: Expression, dataType: Type): Expression = {
+    dataType match {
+      case dt:UIntType => DoPrim(PrimOps.Cat, List.fill(bitWidth(dt).intValue)(e), Seq.empty[BigInt], UIntType(UnknownWidth))
+      case dt:SIntType => DoPrim(PrimOps.Cat, List.fill(bitWidth(dt).intValue)(e), Seq.empty[BigInt], UIntType(UnknownWidth))
+      case dt => error("Mask type does not properly correspond with data type!")
     }
   }
 }
@@ -141,7 +167,7 @@ object MemUtils {
       Field("clk", Default, ClockType)))
   def rwPortToBundle(name: String, mem: DefMemory) =
     BundleType(Seq(
-      Field("rmode", Default, UIntType(IntWidth(1))),
+      Field("wmode", Default, UIntType(IntWidth(1))),
       Field("data", Default, mem.dataType),
       Field("rdata", Flip, mem.dataType),
       Field("mask", Default, create_mask(mem.dataType)),
@@ -180,7 +206,26 @@ object NoInlineMem extends Pass {
       connectField(groundPort,aggPort,"clk"),
       Connect(NoInfo,
         SubField(groundPort,"data",groundMem.dataType),
-        toBits(SubField(aggPort,"data",aggMem.dataType)))
+        toBits(SubField(aggPort,"data",aggMem.dataType))),
+      Connect(NoInfo,
+        SubField(groundPort,"mask",create_mask(groundMem.dataType)),
+        toBitMask(SubField(aggPort,"mask",create_mask(aggMem.dataType)),aggMem.dataType))
+    )
+    Block(stmts)
+  }
+  def adaptReadWriter(aggPort: Expression, aggMem: DefMemory, groundPort: Expression, groundMem: DefMemory): Statement = {
+    val stmts = Seq(
+      connectField(groundPort,aggPort,"addr"),
+      connectField(groundPort,aggPort,"en"),
+      connectField(groundPort,aggPort,"wmode"),
+      connectField(groundPort,aggPort,"clk"),
+      fromBits(SubField(aggPort,"rdata",aggMem.dataType),SubField(groundPort,"rdata",groundMem.dataType)),
+      Connect(NoInfo,
+        SubField(groundPort,"data",groundMem.dataType),
+        toBits(SubField(aggPort,"data",aggMem.dataType))),
+      Connect(NoInfo,
+        SubField(groundPort,"mask",create_mask(groundMem.dataType)),
+        toBitMask(SubField(aggPort,"mask",create_mask(aggMem.dataType)),aggMem.dataType))
     )
     Block(stmts)
   }
@@ -219,6 +264,7 @@ object NoInlineMem extends Pass {
         val bbRef = Reference(bbInst.name,UnknownType)
         val rconns = (k.readers zip loweredMem.readers).map{ case (x,y) => adaptReader(Reference(x, UnknownType), k, SubField(bbRef,y,UnknownType), loweredMem) }
         val wconns = (k.writers zip loweredMem.writers).map{ case (x,y) => adaptWriter(Reference(x, UnknownType), k, SubField(bbRef,y,UnknownType), loweredMem) }
+        val rwconns = (k.writers zip loweredMem.writers).map{ case (x,y) => adaptReadWriter(Reference(x, UnknownType), k, SubField(bbRef,y,UnknownType), loweredMem) }
         Module(ExtMemInfo(k), v, ioPorts, Block(Seq(bbInst) ++ rconns ++ wconns))
       }
     }

@@ -204,17 +204,17 @@ class VerilogCompiler extends Compiler {
 }
 
 // Lowers memories, emits conf file
-class NoInlineMemsTransform() extends Transform with SimpleRun {
-   val passSeq = Seq(passes.NoInlineMems)
+class NoInlineMemTransform() extends Transform with SimpleRun {
+   val passSeq = Seq(passes.NoInlineMem)
    def execute (circuit: Circuit, annotations: Seq[CircuitAnnotation]): TransformResult =
       run(circuit, passSeq)
 }
 
-class NoInlineMemsCompiler extends Compiler {
+class NoInlineMemCompiler extends Compiler {
    def transforms(writer: Writer): Seq[Transform] = Seq(
       new Chisel3ToHighFirrtl(),
       new IRToWorkingIR(),
-      new NoInlineMemsTransform(),
+      new NoInlineMemTransform(),
       new EmitFirrtl(writer)
    )
 }
