@@ -51,16 +51,16 @@ case class NoInlineMemAnnotation(t: String, tID: TransID)
 object toBits {
   def apply(e: Expression): Expression = {
     e match {
-      case ex: Reference => hiercat(ex,ex.tpe)
-      case ex: SubField => hiercat(ex,ex.tpe)
-      case ex: SubIndex => hiercat(ex,ex.tpe)
+      case ex: WRef => hiercat(ex,ex.tpe)
+      case ex: WSubField => hiercat(ex,ex.tpe)
+      case ex: WSubIndex => hiercat(ex,ex.tpe)
       case t => error("Invalid operand expression for toBits!")
     }
   }
   def hiercat(e: Expression, dt: Type): Expression = {
     dt match {
-      case t:VectorType => DoPrim(PrimOps.Cat, (0 to t.size).map(i => hiercat(SubIndex(e, i, t.tpe),t.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
-      case t:BundleType => DoPrim(PrimOps.Cat, t.fields.map(f => hiercat(SubField(e, f.name, f.tpe),f.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
+      case t:VectorType => DoPrim(PrimOps.Cat, (0 to t.size).map(i => hiercat(WSubIndex(e, i, t.tpe, UNKNOWNGENDER),t.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
+      case t:BundleType => DoPrim(PrimOps.Cat, t.fields.map(f => hiercat(WSubField(e, f.name, f.tpe, UNKNOWNGENDER),f.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
       case t:UIntType => e
       case t:SIntType => e
       case t => error("Unknown type encountered in toBits!")
@@ -71,16 +71,16 @@ object toBits {
 object toBitMask {
   def apply(e: Expression, dataType: Type): Expression = {
     e match {
-      case ex: Reference => hiermask(ex,ex.tpe,dataType)
-      case ex: SubField => hiermask(ex,ex.tpe,dataType)
-      case ex: SubIndex => hiermask(ex,ex.tpe,dataType)
+      case ex: WRef => hiermask(ex,ex.tpe,dataType)
+      case ex: WSubField => hiermask(ex,ex.tpe,dataType)
+      case ex: WSubIndex => hiermask(ex,ex.tpe,dataType)
       case t => error("Invalid operand expression for toBits!")
     }
   }
   def hiermask(e: Expression, maskType: Type, dataType: Type): Expression = {
     (maskType, dataType) match {
-      case (mt:VectorType, dt:VectorType) => DoPrim(PrimOps.Cat, (0 to mt.size).map(i => hiermask(SubIndex(e, i, mt.tpe), mt.tpe, dt.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
-      case (mt:BundleType, dt:BundleType) => DoPrim(PrimOps.Cat, (mt.fields zip dt.fields).map{ case (mf,df) => hiermask(SubField(e, mf.name, mf.tpe), mf.tpe, df.tpe) }, Seq.empty[BigInt], UIntType(UnknownWidth))
+      case (mt:VectorType, dt:VectorType) => DoPrim(PrimOps.Cat, (0 to mt.size).map(i => hiermask(WSubIndex(e, i, mt.tpe, UNKNOWNGENDER), mt.tpe, dt.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
+      case (mt:BundleType, dt:BundleType) => DoPrim(PrimOps.Cat, (mt.fields zip dt.fields).map{ case (mf,df) => hiermask(WSubField(e, mf.name, mf.tpe, UNKNOWNGENDER), mf.tpe, df.tpe) }, Seq.empty[BigInt], UIntType(UnknownWidth))
       case (mt:UIntType, dt) => groundBitMask(e, dt)
       case (mt, dt) => error("Invalid type for mask component!")
     }
@@ -116,9 +116,9 @@ object bitWidth {
 object fromBits {
   def apply(lhs: Expression, rhs: Expression): Statement = {
     val fbits = lhs match {
-      case ex: Reference => getPart(ex,ex.tpe,rhs,0)
-      case ex: SubField => getPart(ex,ex.tpe,rhs,0)
-      case ex: SubIndex => getPart(ex,ex.tpe,rhs,0)
+      case ex: WRef => getPart(ex,ex.tpe,rhs,0)
+      case ex: WSubField => getPart(ex,ex.tpe,rhs,0)
+      case ex: WSubIndex => getPart(ex,ex.tpe,rhs,0)
       case t => error("Invalid LHS expression for fromBits!")
     }
     Block(fbits._2)
@@ -134,7 +134,7 @@ object fromBits {
         var currentOffset = offset
         var stmts = Seq.empty[Statement]
         for (i <- (0 to t.size)) {
-          val (tmpOffset, substmts) = getPart(SubIndex(lhs, i, t.tpe), t.tpe, rhs, currentOffset)
+          val (tmpOffset, substmts) = getPart(WSubIndex(lhs, i, t.tpe, UNKNOWNGENDER), t.tpe, rhs, currentOffset)
           stmts = stmts ++ substmts
           currentOffset = tmpOffset
         }
@@ -144,7 +144,7 @@ object fromBits {
         var currentOffset = offset
         var stmts = Seq.empty[Statement]
         for (f <- t.fields.reverse) {
-          val (tmpOffset, substmts) = getPart(SubField(lhs, f.name, f.tpe), f.tpe, rhs, currentOffset)
+          val (tmpOffset, substmts) = getPart(WSubField(lhs, f.name, f.tpe, UNKNOWNGENDER), f.tpe, rhs, currentOffset)
           stmts = stmts ++ substmts
           currentOffset = tmpOffset
         }
@@ -194,14 +194,14 @@ object NoInlineMemPass extends Pass {
   def name = "NoInlineMem"
   def connectField(lhs: Expression, rhs: Expression, field: String) =
     Connect(NoInfo,
-      SubField(lhs,field,UnknownType),
-      SubField(rhs,field,UnknownType))
+      WSubField(lhs,field,UnknownType,UNKNOWNGENDER),
+      WSubField(rhs,field,UnknownType,UNKNOWNGENDER))
   def adaptReader(aggPort: Expression, aggMem: DefMemory, groundPort: Expression, groundMem: DefMemory): Statement = {
     val stmts = Seq(
       connectField(groundPort,aggPort,"addr"),
       connectField(groundPort,aggPort,"en"),
       connectField(groundPort,aggPort,"clk"),
-      fromBits(SubField(aggPort,"data",aggMem.dataType),SubField(groundPort,"data",groundMem.dataType))
+      fromBits(WSubField(aggPort,"data",aggMem.dataType,UNKNOWNGENDER),WSubField(groundPort,"data",groundMem.dataType,UNKNOWNGENDER))
     )
     Block(stmts)
   }
@@ -211,11 +211,11 @@ object NoInlineMemPass extends Pass {
       connectField(groundPort,aggPort,"en"),
       connectField(groundPort,aggPort,"clk"),
       Connect(NoInfo,
-        SubField(groundPort,"data",groundMem.dataType),
-        toBits(SubField(aggPort,"data",aggMem.dataType))),
+        WSubField(groundPort,"data",groundMem.dataType,UNKNOWNGENDER),
+        toBits(WSubField(aggPort,"data",aggMem.dataType,UNKNOWNGENDER))),
       Connect(NoInfo,
-        SubField(groundPort,"mask",create_mask(groundMem.dataType)),
-        toBitMask(SubField(aggPort,"mask",create_mask(aggMem.dataType)),aggMem.dataType))
+        WSubField(groundPort,"mask",create_mask(groundMem.dataType),UNKNOWNGENDER),
+        toBitMask(WSubField(aggPort,"mask",create_mask(aggMem.dataType),UNKNOWNGENDER),aggMem.dataType))
     )
     Block(stmts)
   }
@@ -225,13 +225,13 @@ object NoInlineMemPass extends Pass {
       connectField(groundPort,aggPort,"en"),
       connectField(groundPort,aggPort,"wmode"),
       connectField(groundPort,aggPort,"clk"),
-      fromBits(SubField(aggPort,"rdata",aggMem.dataType),SubField(groundPort,"rdata",groundMem.dataType)),
+      fromBits(WSubField(aggPort,"rdata",aggMem.dataType,UNKNOWNGENDER),WSubField(groundPort,"rdata",groundMem.dataType,UNKNOWNGENDER)),
       Connect(NoInfo,
-        SubField(groundPort,"data",groundMem.dataType),
-        toBits(SubField(aggPort,"data",aggMem.dataType))),
+        WSubField(groundPort,"data",groundMem.dataType,UNKNOWNGENDER),
+        toBits(WSubField(aggPort,"data",aggMem.dataType,UNKNOWNGENDER))),
       Connect(NoInfo,
-        SubField(groundPort,"mask",create_mask(groundMem.dataType)),
-        toBitMask(SubField(aggPort,"mask",create_mask(aggMem.dataType)),aggMem.dataType))
+        WSubField(groundPort,"mask",create_mask(groundMem.dataType),UNKNOWNGENDER),
+        toBitMask(WSubField(aggPort,"mask",create_mask(aggMem.dataType),UNKNOWNGENDER),aggMem.dataType))
     )
     Block(stmts)
   }
@@ -244,7 +244,7 @@ object NoInlineMemPass extends Pass {
       case s: DefMemory => {
         val memWrapperName = memWrappers.getOrElseUpdate(s.copy(),
           moduleNS.newName("mem_wrapper"))
-        DefInstance(s.info, s.name, memWrapperName)
+        WDefInstance(s.info, s.name, memWrapperName, UnknownType)
       }
       case s => s map (transformMems)
     }
@@ -266,11 +266,11 @@ object NoInlineMemPass extends Pass {
           writers=k.writers.zipWithIndex.map{ case (x,i) => s"W$i" })
         val memBlackboxName = memBlackboxes.getOrElseUpdate(loweredMem.copy(),
           moduleNS.newName("mem_blackbox"))
-        val bbInst = DefInstance(k.info, k.name, memBlackboxName)
-        val bbRef = Reference(bbInst.name,UnknownType)
-        val rconns = (k.readers zip loweredMem.readers).map{ case (x,y) => adaptReader(Reference(x, UnknownType), k, SubField(bbRef,y,UnknownType), loweredMem) }
-        val wconns = (k.writers zip loweredMem.writers).map{ case (x,y) => adaptWriter(Reference(x, UnknownType), k, SubField(bbRef,y,UnknownType), loweredMem) }
-        val rwconns = (k.writers zip loweredMem.writers).map{ case (x,y) => adaptReadWriter(Reference(x, UnknownType), k, SubField(bbRef,y,UnknownType), loweredMem) }
+        val bbInst = WDefInstance(k.info, k.name, memBlackboxName,UnknownType)
+        val bbRef = WRef(bbInst.name,UnknownType,InstanceKind(),UNKNOWNGENDER)
+        val rconns = (k.readers zip loweredMem.readers).map{ case (x,y) => adaptReader(WRef(x, UnknownType, PortKind(), UNKNOWNGENDER), k, WSubField(bbRef,y,UnknownType,UNKNOWNGENDER), loweredMem) }
+        val wconns = (k.writers zip loweredMem.writers).map{ case (x,y) => adaptWriter(WRef(x, UnknownType, PortKind(), UNKNOWNGENDER), k, WSubField(bbRef,y,UnknownType,UNKNOWNGENDER), loweredMem) }
+        val rwconns = (k.writers zip loweredMem.writers).map{ case (x,y) => adaptReadWriter(WRef(x, UnknownType, PortKind(), UNKNOWNGENDER), k, WSubField(bbRef,y,UnknownType,UNKNOWNGENDER), loweredMem) }
         Module(ExtMemInfo(k), v, ioPorts, Block(Seq(bbInst) ++ rconns ++ wconns))
       }
     }
