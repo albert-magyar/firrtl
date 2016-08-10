@@ -28,6 +28,7 @@ MODIFICATIONS.
 package firrtl
 
 import firrtl.ir._
+import firrtl.Utils.{max, min, pow_minus_one}
 
 import com.typesafe.scalalogging.LazyLogging
 
@@ -111,11 +112,26 @@ object PrimOps extends LazyLogging {
   // Borrowed from Stanza implementation
    def set_primop_type (e:DoPrim) : DoPrim = {
       //println-all(["Inferencing primop type: " e])
-      def PLUS (w1:Width,w2:Width) : Width = PlusWidth(w1,w2)
-      def MAX (w1:Width,w2:Width) : Width = MaxWidth(Seq(w1,w2))
-      def MINUS (w1:Width,w2:Width) : Width = MinusWidth(w1,w2)
-      def POW (w1:Width) : Width = ExpWidth(w1)
-      def MIN (w1:Width,w2:Width) : Width = MinWidth(Seq(w1,w2))
+      def PLUS (w1:Width,w2:Width) : Width = (w1, w2) match {
+        case (IntWidth(i), IntWidth(j)) => IntWidth(i + j)
+        case _ => PlusWidth(w1,w2)
+      }
+      def MAX (w1:Width,w2:Width) : Width = (w1, w2) match {
+        case (IntWidth(i), IntWidth(j)) => IntWidth(max(i,j))
+        case _ => MaxWidth(Seq(w1,w2))
+      }
+      def MINUS (w1:Width,w2:Width) : Width = (w1, w2) match {
+        case (IntWidth(i), IntWidth(j)) => IntWidth(i - j)
+        case _ => MinusWidth(w1,w2)
+      }
+      def POW (w1:Width) : Width = w1 match {
+        case IntWidth(i) => IntWidth(pow_minus_one(BigInt(2), i))
+        case _ => ExpWidth(w1)
+      }
+      def MIN (w1:Width,w2:Width) : Width = (w1, w2) match {
+        case (IntWidth(i), IntWidth(j)) => IntWidth(min(i,j))
+        case _ => MinWidth(Seq(w1,w2))
+      }
       val o = e.op
       val a = e.args
       val c = e.consts
@@ -399,7 +415,7 @@ object PrimOps extends LazyLogging {
             }
             DoPrim(o,a,c,t)
          }
-
+      
      }
    }
 

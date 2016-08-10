@@ -1,29 +1,29 @@
 /*
-Copyright (c) 2014 - 2016 The Regents of the University of
-California (Regents). All Rights Reserved.  Redistribution and use in
-source and binary forms, with or without modification, are permitted
-provided that the following conditions are met:
-   * Redistributions of source code must retain the above
-     copyright notice, this list of conditions and the following
-     two paragraphs of disclaimer.
-   * Redistributions in binary form must reproduce the above
-     copyright notice, this list of conditions and the following
-     two paragraphs of disclaimer in the documentation and/or other materials
-     provided with the distribution.
-   * Neither the name of the Regents nor the names of its contributors
-     may be used to endorse or promote products derived from this
-     software without specific prior written permission.
-IN NO EVENT SHALL REGENTS BE LIABLE TO ANY PARTY FOR DIRECT, INDIRECT,
-SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING LOST PROFITS,
-ARISING OUT OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION, EVEN IF
-REGENTS HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-REGENTS SPECIFICALLY DISCLAIMS ANY WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE. THE SOFTWARE AND ACCOMPANYING DOCUMENTATION, IF
-ANY, PROVIDED HEREUNDER IS PROVIDED "AS IS". REGENTS HAS NO OBLIGATION
-TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR
-MODIFICATIONS.
-*/
+ Copyright (c) 2014 - 2016 The Regents of the University of
+ California (Regents). All Rights Reserved.  Redistribution and use in
+ source and binary forms, with or without modification, are permitted
+ provided that the following conditions are met:
+ * Redistributions of source code must retain the above
+ copyright notice, this list of conditions and the following
+ two paragraphs of disclaimer.
+ * Redistributions in binary form must reproduce the above
+ copyright notice, this list of conditions and the following
+ two paragraphs of disclaimer in the documentation and/or other materials
+ provided with the distribution.
+ * Neither the name of the Regents nor the names of its contributors
+ may be used to endorse or promote products derived from this
+ software without specific prior written permission.
+ IN NO EVENT SHALL REGENTS BE LIABLE TO ANY PARTY FOR DIRECT, INDIRECT,
+ SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING LOST PROFITS,
+ ARISING OUT OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION, EVEN IF
+ REGENTS HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ REGENTS SPECIFICALLY DISCLAIMS ANY WARRANTIES, INCLUDING, BUT NOT
+ LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ A PARTICULAR PURPOSE. THE SOFTWARE AND ACCOMPANYING DOCUMENTATION, IF
+ ANY, PROVIDED HEREUNDER IS PROVIDED "AS IS". REGENTS HAS NO OBLIGATION
+ TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR
+ MODIFICATIONS.
+ */
 
 package firrtl.passes
 
@@ -38,9 +38,15 @@ import firrtl._
 import firrtl.ir._
 import firrtl.Utils._
 import firrtl.Mappers._
-import firrtl.Serialize._
 import firrtl.PrimOps._
+import firrtl.Annotations._
 import firrtl.WrappedExpression._
+
+case class NoInlineMemAnnotation(t: String, tID: TransID)
+    extends Annotation with Loose with Unstable {
+  val target = CircuitName(t)
+  def duplicate(n: Named) = this.copy(t=n.name)
+}
 
 object toBits {
   def apply(e: Expression): Expression = {
@@ -100,10 +106,10 @@ object bitWidth {
     }
   }
   def baseWidth(w: Width): BigInt = {
-   w match {
-     case w:IntWidth => w.width
-     case w => error("Unknown width encountered in bitWidth!")
-   }
+    w match {
+      case w:IntWidth => w.width
+      case w => error("Unknown width encountered in bitWidth!")
+    }
   }
 }
 
@@ -184,7 +190,7 @@ case class ExtMemInfo(mem: DefMemory) extends Info {
   override def toString = "Generated memory wrapper"
 }
 
-object NoInlineMem extends Pass {
+object NoInlineMemPass extends Pass {
   def name = "NoInlineMem"
   def connectField(lhs: Expression, rhs: Expression, field: String) =
     Connect(NoInfo,
@@ -249,7 +255,7 @@ object NoInlineMem extends Pass {
           Module(m.info, m.name, m.ports, transformedBody)
         }
         case m: ExtModule => m
-      } 
+      }
     }
     val memWrapperModules = memWrappers map {
       case (k,v) => {
@@ -279,3 +285,32 @@ object NoInlineMem extends Pass {
     Circuit(c.info, transformedModules ++ memWrapperModules ++ memBlackboxModules, c.main)
   }
 }
+
+class NoInlineMem(transID: TransID) extends Transform with LazyLogging {
+  def execute(circ: Circuit, map: AnnotationMap) = {
+    println(map.toString)
+    println(transID.toString)
+    println(map.get(transID).toString)
+    map get transID match {
+      case Some(p) => {
+        p get CircuitName(circ.main) match {
+          case Some(NoInlineMemAnnotation(_, _)) => {
+            TransformResult((Seq(
+              NoInlineMemPass,
+              CheckInitialization,
+              ResolveKinds,
+              InferTypes,
+              ResolveGenders) foldLeft circ){ (c, pass) =>
+              val x = Utils.time(pass.name)(pass run c)
+              logger debug x.serialize
+              x
+            }, None, Some(map))
+          }
+          case _ => TransformResult(circ, None, Some(map))
+        }
+      }
+      case _ => TransformResult(circ, None, Some(map))
+    }
+  }
+}
+

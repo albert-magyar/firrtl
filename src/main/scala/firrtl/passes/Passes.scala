@@ -39,7 +39,6 @@ import firrtl._
 import firrtl.ir._
 import firrtl.Utils._
 import firrtl.Mappers._
-import firrtl.Serialize._
 import firrtl.PrimOps._
 import firrtl.WrappedExpression._
 
@@ -490,9 +489,6 @@ object InferWidths extends Pass {
             if(in.isEmpty) Seq(default)
             else in
 
-         def max(a: BigInt, b: BigInt): BigInt = if (a >= b) a else b
-         def min(a: BigInt, b: BigInt): BigInt = if (a >= b) b else a
-         def pow_minus_one(a: BigInt, b: BigInt): BigInt = a.pow(b.toInt) - 1
 
          def solve(w: Width): Option[BigInt] = w match {
             case (w: VarWidth) =>
@@ -522,14 +518,20 @@ object InferWidths extends Pass {
          //println-all-debug(["WITH: " wx])
          wx
       }
+      def reduce_var_widths_s (s: Statement): Statement = {
+        def onType(t: Type): Type = t map onType map reduce_var_widths_w
+        s map reduce_var_widths_s map onType
+      }
    
       val modulesx = c.modules.map{ m => {
          val portsx = m.ports.map{ p => {
             Port(p.info,p.name,p.direction,mapr(reduce_var_widths_w _,p.tpe)) }}
          (m) match {
             case (m:ExtModule) => ExtModule(m.info,m.name,portsx)
-            case (m:Module) => mname = m.name; Module(m.info,m.name,portsx,mapr(reduce_var_widths_w _,m.body)) }}}
-      Circuit(c.info,modulesx,c.main)
+            case (m:Module) =>
+              mname = m.name
+              Module(m.info,m.name,portsx,m.body map reduce_var_widths_s _) }}}
+      InferTypes.run(Circuit(c.info,modulesx,c.main))
    }
    
    def run (c:Circuit): Circuit = {
@@ -744,151 +746,6 @@ object ExpandConnects extends Pass {
    }
 }
 
-case class Location(base:Expression,guard:Expression)
-object RemoveAccesses extends Pass {
-   private var mname = ""
-   def name = "Remove Accesses"
-   def get_locations (e:Expression) : Seq[Location] = {
-       e match {
-         case (e:WRef) => create_exps(e).map(Location(_,one))
-         case (e:WSubIndex) => {
-            val ls = get_locations(e.exp)
-            val start = get_point(e)
-            val end = start + get_size(tpe(e))
-            val stride = get_size(tpe(e.exp))
-            val lsx = ArrayBuffer[Location]()
-            var c = 0
-            for (i <- 0 until ls.size) {
-               if (((i % stride) >= start) & ((i % stride) < end)) {
-                  lsx += ls(i)
-               }
-            }
-            lsx
-         }
-         case (e:WSubField) => {
-            val ls = get_locations(e.exp)
-            val start = get_point(e)
-            val end = start + get_size(tpe(e))
-            val stride = get_size(tpe(e.exp))
-            val lsx = ArrayBuffer[Location]()
-            var c = 0
-            for (i <- 0 until ls.size) {
-               if (((i % stride) >= start) & ((i % stride) < end)) { lsx += ls(i) }
-            }
-            lsx
-         }
-         case (e:WSubAccess) => {
-            val ls = get_locations(e.exp)
-            val stride = get_size(tpe(e))
-            val wrap = tpe(e.exp).asInstanceOf[VectorType].size
-            val lsx = ArrayBuffer[Location]()
-            var c = 0
-            for (i <- 0 until ls.size) {
-               if ((c % wrap) == 0) { c = 0 }
-               val basex = ls(i).base
-               val guardx = AND(ls(i).guard,EQV(uint(c),e.index))
-               lsx += Location(basex,guardx)
-               if ((i + 1) % stride == 0) {
-                  c = c + 1
-               }
-            }
-            lsx
-         }
-      }
-   }
-   def has_access (e:Expression) : Boolean = {
-      var ret:Boolean = false
-      def rec_has_access (e:Expression) : Expression = {
-         e match {
-            case (e:WSubAccess) => { ret = true; e }
-            case (e) => e map (rec_has_access)
-         }
-      }
-      rec_has_access(e)
-      ret
-   }
-   def run (c:Circuit): Circuit = {
-      def remove_m (m:Module) : Module = {
-         val namespace = Namespace(m)
-         mname = m.name
-         def remove_s (s:Statement) : Statement = {
-            val stmts = ArrayBuffer[Statement]()
-            def create_temp (e:Expression) : Expression = {
-               val n = namespace.newTemp
-               stmts += DefWire(info(s),n,tpe(e))
-               WRef(n,tpe(e),kind(e),gender(e))
-            }
-            def remove_e (e:Expression) : Expression = { //NOT RECURSIVE (except primops) INTENTIONALLY!
-               e match {
-                  case (e:DoPrim) => e map (remove_e)
-                  case (e:Mux) => e map (remove_e)
-                  case (e:ValidIf) => e map (remove_e)
-                  case (e:SIntLiteral) => e
-                  case (e:UIntLiteral) => e
-                  case x => {
-                     val e = x match {
-                        case (w:WSubAccess) => WSubAccess(w.exp,remove_e(w.index),w.tpe,w.gender)
-                        case _ => x
-                     }
-                     if (has_access(e)) {
-                        val rs = get_locations(e)
-                        val foo = rs.find(x => {x.guard != one})
-                        foo match {
-                           case None => error("Shouldn't be here")
-                           case foo:Some[Location] => {
-                              val temp = create_temp(e)
-                              val temps = create_exps(temp)
-                              def get_temp (i:Int) = temps(i % temps.size)
-                              (rs,0 until rs.size).zipped.foreach {
-                                 (x,i) => {
-                                    if (i < temps.size) {
-                                       stmts += Connect(info(s),get_temp(i),x.base)
-                                    } else {
-                                       stmts += Conditionally(info(s),x.guard,Connect(info(s),get_temp(i),x.base),EmptyStmt)
-                                    }
-                                 }
-                              }
-                              temp
-                           }
-                        }
-                     } else { e}
-                  }
-               }
-            }
-
-            val sx = s match {
-               case (s:Connect) => {
-                  if (has_access(s.loc)) {
-                     val ls = get_locations(s.loc)
-                     val locx = 
-                        if (ls.size == 1 & weq(ls(0).guard,one)) s.loc
-                        else {
-                           val temp = create_temp(s.loc)
-                           for (x <- ls) { stmts += Conditionally(s.info,x.guard,Connect(s.info,x.base,temp),EmptyStmt) }
-                           temp
-                        }
-                     Connect(s.info,locx,remove_e(s.expr))
-                  } else { Connect(s.info,s.loc,remove_e(s.expr)) }
-               }
-               case (s) => s map (remove_e) map (remove_s)
-            }
-            stmts += sx
-            if (stmts.size != 1) Block(stmts) else stmts(0)
-         }
-         Module(m.info,m.name,m.ports,remove_s(m.body))
-      }
-   
-      val modulesx = c.modules.map{
-         m => {
-            m match {
-               case (m:ExtModule) => m
-               case (m:Module) => remove_m(m)
-            }
-         }
-      }
-      Circuit(c.info,modulesx,c.main)
-   }
-}
 
 // Replace shr by amount >= arg width with 0 for UInts and MSB for SInts
 // TODO replace UInt with zero-width wire instead
@@ -1227,6 +1084,7 @@ object RemoveCHIRRTL extends Pass {
       def remove_chirrtl_m (m:Module) : Module = {
          val hash = LinkedHashMap[String,MPorts]()
          val repl = LinkedHashMap[String,DataRef]()
+         val raddrs = HashMap[String, Expression]()
          val ut = UnknownType
          val mport_types = LinkedHashMap[String,Type]()
          def EMPs () : MPorts = MPorts(ArrayBuffer[MPort](),ArrayBuffer[MPort](),ArrayBuffer[MPort]())
@@ -1310,11 +1168,15 @@ object RemoveCHIRRTL extends Pass {
                         ens += "en"
                         masks += "mask"
                      }
-                     case _ => {
+                     case MRead => {
                         repl(s.name) = DataRef(SubField(Reference(s.mem,ut),s.name,ut),"data","data","blah",false)
                         addrs += "addr"
                         clks += "clk"
-                        ens += "en"
+                        s.exps(0) match {
+                           case e: Reference =>
+                              raddrs(e.name) = SubField(SubField(Reference(s.mem,ut),s.name,ut),"en",ut)
+                           case _=>
+                        }
                      }
                   }
                   val stmts = ArrayBuffer[Statement]()
@@ -1334,23 +1196,25 @@ object RemoveCHIRRTL extends Pass {
          }
          def remove_chirrtl_s (s:Statement) : Statement = {
             var has_write_mport = false
+            var has_read_mport: Option[Expression] = None
             var has_readwrite_mport:Option[Expression] = None
             def remove_chirrtl_e (g:Gender)(e:Expression) : Expression = {
-               (e) match { 
-                  case (e:Reference) => {
-                     if (repl.contains(e.name)) {
-                        val vt = repl(e.name)
-                        g match {
-                           case MALE => SubField(vt.exp,vt.male,e.tpe)
-                           case FEMALE => {
-                              has_write_mport = true
-                              if (vt.rdwrite == true) 
-                                 has_readwrite_mport = Some(SubField(vt.exp,"wmode",UIntType(IntWidth(1))))
-                              SubField(vt.exp,vt.female,e.tpe)
-                           }
+               (e) match {
+                  case (e:Reference) if repl contains e.name =>
+                     val vt = repl(e.name)
+                     g match {
+                        case MALE => SubField(vt.exp,vt.male,e.tpe)
+                        case FEMALE => {
+                           has_write_mport = true
+                           if (vt.rdwrite) 
+                              has_readwrite_mport = Some(SubField(vt.exp,"wmode",UIntType(IntWidth(1))))
+                           SubField(vt.exp,vt.female,e.tpe)
                         }
-                     } else e
-                  }
+                     }
+                  case (e:Reference) if g == FEMALE && (raddrs contains e.name) =>
+                     has_read_mport = Some(raddrs(e.name))
+                     e
+                  case (e:Reference) => e
                   case (e:SubAccess) => SubAccess(remove_chirrtl_e(g)(e.expr),remove_chirrtl_e(MALE)(e.index),e.tpe)
                   case (e) => e map (remove_chirrtl_e(g))
                }
@@ -1367,20 +1231,35 @@ object RemoveCHIRRTL extends Pass {
                   case (e) => e
                }
             }
-            (s) match { 
+            (s) match {
+               case (s:DefNode) => {
+                  val stmts = ArrayBuffer[Statement]()
+                  val valuex = remove_chirrtl_e(MALE)(s.value)
+                  stmts += DefNode(s.info,s.name,valuex)
+                  has_read_mport match {
+                    case None =>
+                    case Some(en) => stmts += Connect(s.info,en,one)
+                  }
+                  if (stmts.size > 1) Block(stmts)
+                  else stmts(0)
+               }
                case (s:Connect) => {
                   val stmts = ArrayBuffer[Statement]()
                   val rocx = remove_chirrtl_e(MALE)(s.expr)
                   val locx = remove_chirrtl_e(FEMALE)(s.loc)
                   stmts += Connect(s.info,locx,rocx)
+                  has_read_mport match {
+                    case None =>
+                    case Some(en) => stmts += Connect(s.info,en,one)
+                  }
                   if (has_write_mport) {
                      val e = get_mask(s.loc)
                      for (x <- create_exps(e) ) {
                         stmts += Connect(s.info,x,one)
                      }
-                     if (has_readwrite_mport != None) {
-                        val wmode = has_readwrite_mport.get
-                        stmts += Connect(s.info,wmode,one)
+                     has_readwrite_mport match {
+                        case None =>
+                        case Some(wmode) => stmts += Connect(s.info,wmode,one)
                      }
                   }
                   if (stmts.size > 1) Block(stmts)
@@ -1391,16 +1270,20 @@ object RemoveCHIRRTL extends Pass {
                   val locx = remove_chirrtl_e(FEMALE)(s.loc)
                   val rocx = remove_chirrtl_e(MALE)(s.expr)
                   stmts += PartialConnect(s.info,locx,rocx)
-                  if (has_write_mport != false) {
+                  has_read_mport match {
+                    case None =>
+                    case Some(en) => stmts += Connect(s.info,en,one)
+                  }
+                  if (has_write_mport) {
                      val ls = get_valid_points(tpe(s.loc),tpe(s.expr),Default,Default)
                      val locs = create_exps(get_mask(s.loc))
                      for (x <- ls ) {
                         val locx = locs(x._1)
                         stmts += Connect(s.info,locx,one)
                      }
-                     if (has_readwrite_mport != None) {
-                        val wmode = has_readwrite_mport.get
-                        stmts += Connect(s.info,wmode,one)
+                     has_readwrite_mport match {
+                        case None =>
+                        case Some(wmode) => stmts += Connect(s.info,wmode,one)
                      }
                   }
                   if (stmts.size > 1) Block(stmts)

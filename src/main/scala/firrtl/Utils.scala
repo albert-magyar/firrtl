@@ -62,6 +62,26 @@ object Utils extends LazyLogging {
     result
   }
 
+  /** Removes all [[firrtl.ir.Empty]] statements and condenses
+   * [[firrtl.ir.Block]] statements.
+    */
+  def squashEmpty(s: Statement): Statement = s map squashEmpty match {
+    case Block(stmts) =>
+      val newStmts = stmts filter (_ != EmptyStmt)
+      newStmts.size match {
+        case 0 => EmptyStmt
+        case 1 => newStmts.head
+        case _ => Block(newStmts)
+      }
+    case s => s
+  }
+
+  /** Indent the results of [[ir.FirrtlNode.serialize]] */
+  def indent(str: String) = str replaceAllLiterally ("\n", "\n  ")
+  def serialize(bi: BigInt): String =
+    if (bi < BigInt(0)) "\"h" + bi.toString(16).substring(1) + "\""
+    else "\"h" + bi.toString(16) + "\""
+
    implicit class WithAs[T](x: T) {
      import scala.reflect._
      def as[O: ClassTag]: Option[O] = x match {
@@ -74,6 +94,9 @@ object Utils extends LazyLogging {
    implicit def toWrappedExpression (x:Expression) = new WrappedExpression(x)
    def ceil_log2(x: BigInt): BigInt = (x-1).bitLength
    def ceil_log2(x: Int): Int = scala.math.ceil(scala.math.log(x) / scala.math.log(2)).toInt
+   def max(a: BigInt, b: BigInt): BigInt = if (a >= b) a else b
+   def min(a: BigInt, b: BigInt): BigInt = if (a >= b) b else a
+   def pow_minus_one(a: BigInt, b: BigInt): BigInt = a.pow(b.toInt) - 1
    val gen_names = Map[String,Int]()
    val delin = "_"
    val BoolType = UIntType(IntWidth(1))
@@ -203,6 +226,22 @@ object Utils extends LazyLogging {
       }
    }
 
+   /** Returns true if t, or any subtype, contains a flipped field
+     * @param t [[firrtl.ir.Type]]
+     * @return if t contains [[firrtl.ir.Flip]]
+     */
+   def hasFlip(t: Type): Boolean = {
+      var has = false
+      def findFlip(t: Type): Type = t map (findFlip) match {
+         case t: BundleType =>
+            for (f <- t.fields) { if (f.flip == Flip) has = true }
+            t
+         case t: Type => t
+      }
+      findFlip(t)
+      has
+   }
+
 //============== TYPES ================
    def mux_type (e1:Expression,e2:Expression) : Type = mux_type(tpe(e1),tpe(e2))
    def mux_type (t1:Type,t2:Type) : Type = {
@@ -268,7 +307,11 @@ object Utils extends LazyLogging {
    }
    def long_BANG (t:Type) : Long = {
       (t) match {
-         case g: GroundType => g.width.as[IntWidth].get.width.toLong
+         case g: GroundType => 
+           g.width match {
+             case IntWidth(x) => x.toLong
+             case _ => throw new FIRRTLException(s"Expecting IntWidth, got: ${g.width}")
+           }
          case (t:BundleType) => {
             var w = 0
             for (f <- t.fields) { w = w + long_BANG(f.tpe).toInt }
