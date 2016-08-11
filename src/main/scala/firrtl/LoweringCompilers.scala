@@ -202,7 +202,7 @@ class VerilogCompiler extends Compiler {
       new ResolveAndCheck(),
       new HighFirrtlToMiddleFirrtl(),
       new passes.InferReadWrite(TransID(-1)),
-      new passes.NoInlineMem(TransID(-2)),
+      new passes.NoInlineMem(TransID(1)),
       new MiddleFirrtlToLowFirrtl(),
       new passes.InlineInstances(TransID(0)),
       new EmitVerilogFromLowFirrtl(writer)

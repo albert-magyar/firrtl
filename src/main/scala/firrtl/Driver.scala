@@ -94,7 +94,7 @@ Options:
       passes.InferReadWriteAnnotation(value, TransID(-1))
 
     def handleNoInlineMemOption(value: String) =
-      passes.NoInlineMemAnnotation(value, TransID(-2))
+      passes.NoInlineMemAnnotation(value, TransID(1))
 
     run(args: Array[String],
       Map( "high" -> new HighFirrtlCompiler(),

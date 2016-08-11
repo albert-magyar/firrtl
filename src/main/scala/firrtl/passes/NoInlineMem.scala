@@ -48,6 +48,21 @@ case class NoInlineMemAnnotation(t: String, tID: TransID)
   def duplicate(n: Named) = this.copy(t=n.name)
 }
 
+class ConfWriter(filename: String) {
+  val outputBuffer = new java.io.CharArrayWriter
+  def addMem(bbname: String, m: DefMemory) = {
+    val confPorts = (m.readers.map(p =>"r") ++
+      m.writers.map(p => "w") ++
+      m.readwriters.map(p => "rw")).mkString(",")
+    outputBuffer.append(s"name ${bbname} depth ${m.depth} width ${bitWidth(m.dataType)} ports ${confPorts}\n")
+  }
+  def serialize = {
+    val outputFile = new java.io.PrintWriter(filename)
+    outputFile.write(outputBuffer.toString)
+    outputFile.close()
+  }
+}
+
 object toBits {
   def apply(e: Expression): Expression = {
     e match {
@@ -59,8 +74,10 @@ object toBits {
   }
   def hiercat(e: Expression, dt: Type): Expression = {
     dt match {
-      case t:VectorType => DoPrim(PrimOps.Cat, (0 to t.size).map(i => hiercat(WSubIndex(e, i, t.tpe, UNKNOWNGENDER),t.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
-      case t:BundleType => DoPrim(PrimOps.Cat, t.fields.map(f => hiercat(WSubField(e, f.name, f.tpe, UNKNOWNGENDER),f.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
+      case t:VectorType => DoPrim(PrimOps.Cat, (0 to t.size).map(i =>
+          hiercat(WSubIndex(e, i, t.tpe, UNKNOWNGENDER),t.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
+      case t:BundleType => DoPrim(PrimOps.Cat, t.fields.map(f =>
+          hiercat(WSubField(e, f.name, f.tpe, UNKNOWNGENDER), f.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
       case t:UIntType => e
       case t:SIntType => e
       case t => error("Unknown type encountered in toBits!")
@@ -79,8 +96,10 @@ object toBitMask {
   }
   def hiermask(e: Expression, maskType: Type, dataType: Type): Expression = {
     (maskType, dataType) match {
-      case (mt:VectorType, dt:VectorType) => DoPrim(PrimOps.Cat, (0 to mt.size).map(i => hiermask(WSubIndex(e, i, mt.tpe, UNKNOWNGENDER), mt.tpe, dt.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
-      case (mt:BundleType, dt:BundleType) => DoPrim(PrimOps.Cat, (mt.fields zip dt.fields).map{ case (mf,df) => hiermask(WSubField(e, mf.name, mf.tpe, UNKNOWNGENDER), mf.tpe, df.tpe) }, Seq.empty[BigInt], UIntType(UnknownWidth))
+      case (mt:VectorType, dt:VectorType) => DoPrim(PrimOps.Cat, (0 to mt.size).map(i =>
+          hiermask(WSubIndex(e, i, mt.tpe, UNKNOWNGENDER), mt.tpe, dt.tpe)), Seq.empty[BigInt], UIntType(UnknownWidth))
+      case (mt:BundleType, dt:BundleType) => DoPrim(PrimOps.Cat, (mt.fields zip dt.fields).map{ case (mf,df) =>
+        hiermask(WSubField(e, mf.name, mf.tpe, UNKNOWNGENDER), mf.tpe, df.tpe) }, Seq.empty[BigInt], UIntType(UnknownWidth))
       case (mt:UIntType, dt) => groundBitMask(e, dt)
       case (mt, dt) => error("Invalid type for mask component!")
     }
@@ -116,16 +135,16 @@ object bitWidth {
 object fromBits {
   def apply(lhs: Expression, rhs: Expression): Statement = {
     val fbits = lhs match {
-      case ex: WRef => getPart(ex,ex.tpe,rhs,0)
-      case ex: WSubField => getPart(ex,ex.tpe,rhs,0)
-      case ex: WSubIndex => getPart(ex,ex.tpe,rhs,0)
+      case ex: WRef => getPart(ex, ex.tpe, rhs, 0)
+      case ex: WSubField => getPart(ex, ex.tpe, rhs, 0)
+      case ex: WSubIndex => getPart(ex, ex.tpe, rhs, 0)
       case t => error("Invalid LHS expression for fromBits!")
     }
     Block(fbits._2)
   }
   def getPartGround(lhs: Expression, lhst: Type, rhs: Expression, offset: BigInt): (BigInt, Seq[Statement]) = {
     val intWidth = bitWidth(lhst)
-    val sel = DoPrim(PrimOps.Bits,Seq(rhs),Seq(offset+intWidth-1,offset),UnknownType)
+    val sel = DoPrim(PrimOps.Bits, Seq(rhs), Seq(offset+intWidth-1,offset), UnknownType)
     (offset + intWidth, Seq(Connect(NoInfo,lhs,sel)))
   }
   def getPart(lhs: Expression, lhst: Type, rhs: Expression, offset: BigInt): (BigInt, Seq[Statement]) = {
@@ -150,8 +169,8 @@ object fromBits {
         }
         (currentOffset, stmts)
       }
-      case t:UIntType => getPartGround(lhs,t,rhs,offset)
-      case t:SIntType => getPartGround(lhs,t,rhs,offset)
+      case t:UIntType => getPartGround(lhs, t, rhs, offset)
+      case t:SIntType => getPartGround(lhs, t, rhs, offset)
       case t => error("Unknown type encountered in fromBits!")
     }
   }
@@ -190,7 +209,7 @@ case class ExtMemInfo(mem: DefMemory) extends Info {
   override def toString = "Generated memory wrapper"
 }
 
-object NoInlineMemPass extends Pass {
+class NoInlineMemPass(confWriter: ConfWriter) extends Pass {
   def name = "NoInlineMem"
   def connectField(lhs: Expression, rhs: Expression, field: String) =
     Connect(NoInfo,
@@ -201,7 +220,8 @@ object NoInlineMemPass extends Pass {
       connectField(groundPort,aggPort,"addr"),
       connectField(groundPort,aggPort,"en"),
       connectField(groundPort,aggPort,"clk"),
-      fromBits(WSubField(aggPort,"data",aggMem.dataType,UNKNOWNGENDER),WSubField(groundPort,"data",groundMem.dataType,UNKNOWNGENDER))
+      fromBits(WSubField(aggPort,"data",aggMem.dataType,UNKNOWNGENDER),
+        WSubField(groundPort,"data",groundMem.dataType,UNKNOWNGENDER))
     )
     Block(stmts)
   }
@@ -225,7 +245,8 @@ object NoInlineMemPass extends Pass {
       connectField(groundPort,aggPort,"en"),
       connectField(groundPort,aggPort,"wmode"),
       connectField(groundPort,aggPort,"clk"),
-      fromBits(WSubField(aggPort,"rdata",aggMem.dataType,UNKNOWNGENDER),WSubField(groundPort,"rdata",groundMem.dataType,UNKNOWNGENDER)),
+      fromBits(WSubField(aggPort,"rdata",aggMem.dataType,UNKNOWNGENDER),
+        WSubField(groundPort,"rdata",groundMem.dataType,UNKNOWNGENDER)),
       Connect(NoInfo,
         WSubField(groundPort,"data",groundMem.dataType,UNKNOWNGENDER),
         toBits(WSubField(aggPort,"data",aggMem.dataType,UNKNOWNGENDER))),
@@ -268,9 +289,15 @@ object NoInlineMemPass extends Pass {
           moduleNS.newName("mem_blackbox"))
         val bbInst = WDefInstance(k.info, k.name, memBlackboxName,UnknownType)
         val bbRef = WRef(bbInst.name,UnknownType,InstanceKind(),UNKNOWNGENDER)
-        val rconns = (k.readers zip loweredMem.readers).map{ case (x,y) => adaptReader(WRef(x, UnknownType, PortKind(), UNKNOWNGENDER), k, WSubField(bbRef,y,UnknownType,UNKNOWNGENDER), loweredMem) }
-        val wconns = (k.writers zip loweredMem.writers).map{ case (x,y) => adaptWriter(WRef(x, UnknownType, PortKind(), UNKNOWNGENDER), k, WSubField(bbRef,y,UnknownType,UNKNOWNGENDER), loweredMem) }
-        val rwconns = (k.writers zip loweredMem.writers).map{ case (x,y) => adaptReadWriter(WRef(x, UnknownType, PortKind(), UNKNOWNGENDER), k, WSubField(bbRef,y,UnknownType,UNKNOWNGENDER), loweredMem) }
+        val rconns = (k.readers zip loweredMem.readers).map{ case (x,y) =>
+          adaptReader(WRef(x, UnknownType, PortKind(), UNKNOWNGENDER),
+            k, WSubField(bbRef,y,UnknownType,UNKNOWNGENDER), loweredMem) }
+        val wconns = (k.writers zip loweredMem.writers).map{ case (x,y) =>
+          adaptWriter(WRef(x, UnknownType, PortKind(), UNKNOWNGENDER),
+            k, WSubField(bbRef,y,UnknownType,UNKNOWNGENDER), loweredMem) }
+        val rwconns = (k.writers zip loweredMem.writers).map{ case (x,y) =>
+          adaptReadWriter(WRef(x, UnknownType, PortKind(), UNKNOWNGENDER),
+            k, WSubField(bbRef,y,UnknownType,UNKNOWNGENDER), loweredMem) }
         Module(ExtMemInfo(k), v, ioPorts, Block(Seq(bbInst) ++ rconns ++ wconns))
       }
     }
@@ -278,25 +305,24 @@ object NoInlineMemPass extends Pass {
       case (k,v) => {
         val ioPorts = MemUtils.memToBundle(k).fields.map(f => Port(NoInfo, f.name, Input, f.tpe))
         val confPorts = (k.readers.map(x => "r") ++ k.writers.map(x => "w")).mkString(",")
-        println(s"name ${k.name} depth ${k.depth} width ${bitWidth(k.dataType)} ports ${confPorts}")
+        confWriter.addMem(v,k)
         ExtModule(ExtMemInfo(k), v, ioPorts)
       }
     }
+    confWriter.serialize
     Circuit(c.info, transformedModules ++ memWrapperModules ++ memBlackboxModules, c.main)
   }
 }
 
 class NoInlineMem(transID: TransID) extends Transform with LazyLogging {
   def execute(circ: Circuit, map: AnnotationMap) = {
-    println(map.toString)
-    println(transID.toString)
-    println(map.get(transID).toString)
     map get transID match {
       case Some(p) => {
         p get CircuitName(circ.main) match {
           case Some(NoInlineMemAnnotation(_, _)) => {
+            val writer = new ConfWriter(s"${circ.main}.conf")
             TransformResult((Seq(
-              NoInlineMemPass,
+              new NoInlineMemPass(writer),
               CheckInitialization,
               ResolveKinds,
               InferTypes,
