@@ -63,35 +63,6 @@ class ConfWriter(filename: String) {
   }
 }
 
-object MemUtils {
-  def rPortToBundle(name: String, mem: DefMemory) =
-    BundleType(Seq(
-      Field("data", Flip, mem.dataType),
-      Field("addr", Default, UIntType(IntWidth(ceil_log2(mem.depth)))),
-      Field("en", Default, UIntType(IntWidth(1))),
-      Field("clk", Default, ClockType)))
-  def wPortToBundle(name: String, mem: DefMemory) =
-    BundleType(Seq(
-      Field("data", Default, mem.dataType),
-      Field("mask", Default, create_mask(mem.dataType)),
-      Field("addr", Default, UIntType(IntWidth(ceil_log2(mem.depth)))),
-      Field("en", Default, UIntType(IntWidth(1))),
-      Field("clk", Default, ClockType)))
-  def rwPortToBundle(name: String, mem: DefMemory) =
-    BundleType(Seq(
-      Field("wmode", Default, UIntType(IntWidth(1))),
-      Field("data", Default, mem.dataType),
-      Field("rdata", Flip, mem.dataType),
-      Field("mask", Default, create_mask(mem.dataType)),
-      Field("addr", Default, UIntType(IntWidth(ceil_log2(mem.depth)))),
-      Field("en", Default, UIntType(IntWidth(1))),
-      Field("clk", Default, ClockType)))
-  def memToBundle(s: DefMemory) = BundleType(
-    s.readers.map(p => Field(p, Default, rPortToBundle(p,s))) ++
-      s.writers.map(p => Field(p, Default, wPortToBundle(p,s))) ++
-      s.readwriters.map(p => Field(p, Default, rwPortToBundle(p,s))))
-}
-
 case class ExtMemInfo(mem: DefMemory) extends Info {
   override def toString = "Generated memory wrapper"
 }
@@ -168,7 +139,7 @@ class NoInlineMemPass(confWriter: ConfWriter) extends Pass {
     val memWrapperModules = memWrappers map {
       case (k,v) => {
         assert(k.dataType != UnknownType)
-        val ioPorts = MemUtils.memToBundle(k).fields.map(f => Port(NoInfo, f.name, Input, f.tpe))
+        val ioPorts = MemPortUtils.memToBundle(k).fields.map(f => Port(NoInfo, f.name, Input, f.tpe))
         val loweredMem = k.copy(dataType=UIntType(IntWidth(bitWidth(k.dataType))),
           readers=k.readers.zipWithIndex.map{ case (x,i) => s"R$i" },
           writers=k.writers.zipWithIndex.map{ case (x,i) => s"W$i" })
@@ -190,7 +161,7 @@ class NoInlineMemPass(confWriter: ConfWriter) extends Pass {
     }
     val memBlackboxModules = memBlackboxes map {
       case (k,v) => {
-        val ioPorts = MemUtils.memToBundle(k).fields.map(f => Port(NoInfo, f.name, Input, f.tpe))
+        val ioPorts = MemPortUtils.memToBundle(k).fields.map(f => Port(NoInfo, f.name, Input, f.tpe))
         val confPorts = (k.readers.map(x => "r") ++ k.writers.map(x => "w")).mkString(",")
         confWriter.addMem(v,k)
         ExtModule(ExtMemInfo(k), v, ioPorts)

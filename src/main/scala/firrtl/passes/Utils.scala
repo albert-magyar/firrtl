@@ -154,3 +154,32 @@ object fromBits {
     }
   }
 }
+
+object MemPortUtils {
+  def rPortToBundle(name: String, mem: DefMemory) =
+    BundleType(Seq(
+      Field("data", Flip, mem.dataType),
+      Field("addr", Default, UIntType(IntWidth(ceil_log2(mem.depth)))),
+      Field("en", Default, UIntType(IntWidth(1))),
+      Field("clk", Default, ClockType)))
+  def wPortToBundle(name: String, mem: DefMemory) =
+    BundleType(Seq(
+      Field("data", Default, mem.dataType),
+      Field("mask", Default, create_mask(mem.dataType)),
+      Field("addr", Default, UIntType(IntWidth(ceil_log2(mem.depth)))),
+      Field("en", Default, UIntType(IntWidth(1))),
+      Field("clk", Default, ClockType)))
+  def rwPortToBundle(name: String, mem: DefMemory) =
+    BundleType(Seq(
+      Field("wmode", Default, UIntType(IntWidth(1))),
+      Field("data", Default, mem.dataType),
+      Field("rdata", Flip, mem.dataType),
+      Field("mask", Default, create_mask(mem.dataType)),
+      Field("addr", Default, UIntType(IntWidth(ceil_log2(mem.depth)))),
+      Field("en", Default, UIntType(IntWidth(1))),
+      Field("clk", Default, ClockType)))
+  def memToBundle(s: DefMemory) = BundleType(
+    s.readers.map(p => Field(p, Default, rPortToBundle(p,s))) ++
+      s.writers.map(p => Field(p, Default, wPortToBundle(p,s))) ++
+      s.readwriters.map(p => Field(p, Default, rwPortToBundle(p,s))))
+}
