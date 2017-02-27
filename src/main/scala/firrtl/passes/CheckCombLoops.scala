@@ -15,7 +15,7 @@ object CheckCombLoops extends Pass {
   def name = "Check Loops"
 
   class CombLoopException(info: Info, mname: String, cycle: List[LogicNode]) extends PassException(
-    s"$info: [module $mname] Combinational loop detected: " + cycle)
+    s"$info: [module $mname] Combinational loop detected: " + cycle.mkString("\n"))
 
   private def makeMultiMap[K,V] = new mutable.HashMap[K, mutable.Set[V]] with mutable.MultiMap[K,V]
 
@@ -46,19 +46,32 @@ object CheckCombLoops extends Pass {
       order.reverse.toList
     }
 
-    def reachabilityBFS(root: T) = {
-      val visited = new mutable.HashSet[T]
+    def doBFS(root: T) = {
+      val prev = new mutable.HashMap[T,T]
       val queue = new mutable.Queue[T]
       queue.enqueue(root)
       while (!queue.isEmpty) {
-        for (n <- getEdges(queue.dequeue)) {
-          if (!visited.contains(n)) {
-            visited += n
-            queue.enqueue(n)
+        val u = queue.dequeue
+        for (v <- getEdges(u)) {
+          if (!prev.contains(v)) {
+            prev(v) = u
+            queue.enqueue(v)
           }
         }
       }
-      visited.toSet
+      prev
+    }
+
+    def reachabilityBFS(root: T) = doBFS(root).keys.toSet
+
+    def path(start: T, end: T) = {
+      val nodePath = new mutable.ArrayBuffer[T]
+      val prev = doBFS(start)
+      nodePath += end
+      while (nodePath.last != start) {
+        nodePath += prev(nodePath.last)
+      }
+      nodePath.toList.reverse
     }
 
     def findCycles = {
@@ -85,7 +98,10 @@ object CheckCombLoops extends Pass {
         }
         if (lowlinks(v) == indices(v)) {
           val scc = new mutable.ArrayBuffer[T]
-          do { scc += stack.pop } while (scc.last != v)
+          do {
+            val w = stack.pop
+            onstack -= w
+            scc += w } while (scc.last != v)
           if (scc.length > 1) {
             nonTrivialSCCs.append(scc.toList)
           }
@@ -101,8 +117,8 @@ object CheckCombLoops extends Pass {
 
 
 
-    def simplify(vprime: TraversableOnce[T]) = {
-      val eprime = vprime.map( v => (v,reachabilityBFS(v))).toMap
+    def simplify(vprime: Set[T]) = {
+      val eprime = vprime.map( v => (v,reachabilityBFS(v) & vprime) ).toMap
       new DepGraph(vprime.toSet, eprime)
     }
 
@@ -114,12 +130,12 @@ object CheckCombLoops extends Pass {
 
   }
 
-  private def getInstanceGraph(mname: String, deps: mutable.MultiMap[String,String])(s: Statement): Statement = s match {
+  private def getInstanceGraph(deps: mutable.HashMap[String,String])(s: Statement): Statement = s match {
     case i: WDefInstance =>
-      deps.addBinding(mname,i.module)
+      deps(i.name) = i.module
       i
     case _ =>
-      s map getInstanceGraph(mname,deps)
+      s map getInstanceGraph(deps)
       s
   }
 
@@ -163,6 +179,11 @@ object CheckCombLoops extends Pass {
     case w: DefWire =>
       nodes += LogicNode(w.name)
       w
+    case n: DefNode =>
+      val lhs = LogicNode(n.name)
+      nodes += lhs
+      getExprDeps(deps.getOrElseUpdate(lhs,new mutable.HashSet[LogicNode]))(n.value)
+      n
     case m: DefMemory =>
       if (m.readLatency == 0) {
         for (rp <- m.readers) {
@@ -196,7 +217,7 @@ object CheckCombLoops extends Pass {
       (edges mapValues { _.toSet }).toMap[LogicNode, Set[LogicNode]])
   }
 
-  private def reportCycle(e: Errors, m: DefModule)(cycle: List[LogicNode]) = {
+  private def reportCycle(e: Errors, m: DefModule, moduleGraphs: mutable.HashMap[String,DepGraph[LogicNode]], moduleDeps: mutable.HashMap[String, mutable.HashMap[String,String]])(cycle: List[LogicNode]) = {
     e.append(new CombLoopException(m.info,m.name,cycle))
   }
 
@@ -205,17 +226,19 @@ object CheckCombLoops extends Pass {
     val errors = new Errors()
 
     val moduleMap = c.modules.map({m => (m.name,m) }).toMap
-    val moduleDeps = makeMultiMap[String,String]
-    c.modules.map( m => m map getInstanceGraph(m.name, moduleDeps) )
+    val moduleDeps = new mutable.HashMap[String, mutable.HashMap[String,String]]
+    c.modules.map( m => m map getInstanceGraph(moduleDeps.getOrElseUpdate(m.name, new mutable.HashMap[String,String])) )
     val moduleDepGraph = new DepGraph(moduleMap.keys.toSet,
-      (moduleDeps mapValues { _.toSet }).toMap[String, Set[String]])
+      (moduleDeps mapValues { _.values.toSet }).toMap[String, Set[String]])
     val topoSortedModules = moduleDepGraph.linearize(c.main).reverse map {moduleMap(_)}
+    val moduleGraphs = new mutable.HashMap[String,DepGraph[LogicNode]]
     val simplifiedModules = new mutable.HashMap[String,DepGraph[LogicNode]]
     for (m <- topoSortedModules) {
       val internalDeps = getInternalDeps(simplifiedModules,m)
       val cycles = internalDeps.findCycles
-      cycles map reportCycle(errors,m)
-      simplifiedModules(m.name) = internalDeps.simplify(m.ports map { p => LogicNode(p.name) })
+      cycles map reportCycle(errors,m,moduleGraphs,moduleDeps)
+      moduleGraphs(m.name) = internalDeps
+      simplifiedModules(m.name) = internalDeps.simplify((m.ports map { p => LogicNode(p.name) }).toSet)
     }
     errors.trigger()
 

@@ -96,6 +96,7 @@ class LowFirrtlOptimization extends CoreTransform {
   def inputForm = LowForm
   def outputForm = LowForm
   def passSeq = Seq(
+    passes.CheckCombLoops,
     passes.RemoveValidIf,
     passes.ConstProp,
     passes.PadWidths,
@@ -139,7 +140,7 @@ class VerilogCompiler extends Compiler {
 }
 
 class CheckLoopsTransform extends CoreTransform {
-  def inputForm = HighForm
+  def inputForm = LowForm
   def outputForm = LowForm
   def passSeq = Seq(
     passes.CheckCombLoops)
@@ -147,5 +148,6 @@ class CheckLoopsTransform extends CoreTransform {
 
 class CheckLoopsCompiler extends Compiler {
   def emitter = new FirrtlEmitter
-  def transforms: Seq[Transform] = Seq(new CheckLoopsTransform)
+  def transforms: Seq[Transform] = 
+  getLoweringTransforms(ChirrtlForm,LowForm) ++ Seq(new CheckLoopsTransform)
 }

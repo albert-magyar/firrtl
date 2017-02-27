@@ -50,6 +50,30 @@ circuit hasloops :
     }
   }
 
+  "Node combinational loop" should "throw an exception" in {
+    val input = """
+circuit hasloops :
+  module hasloops :
+    input clk : Clock
+    input a : UInt<1>
+    input b : UInt<1>
+    output c : UInt<1>
+    output d : UInt<1>
+
+    wire y : UInt<1>
+ 
+    c <= b
+    node z = and(c,y)
+    y <= z
+    d <= z
+""".stripMargin
+
+    val writer = new java.io.StringWriter
+    intercept[CheckCombLoops.CombLoopException] {
+      compile(CircuitState(parse(input), ChirrtlForm, None), writer)
+    }
+  }
+
   "Combinational loop through a combinational memory read port" should "throw an exception" in {
     val input = """
 circuit hasloops :
