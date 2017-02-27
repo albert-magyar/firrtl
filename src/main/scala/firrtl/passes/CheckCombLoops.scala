@@ -14,7 +14,7 @@ import annotation.tailrec
 object CheckCombLoops extends Pass {
   def name = "Check Loops"
 
-  class CombLoopException(info: Info, mname: String, cycle: List[LogicNode]) extends PassException(
+  class CombLoopException(info: Info, mname: String, cycle: List[String]) extends PassException(
     s"$info: [module $mname] Combinational loop detected: " + cycle.mkString("\n"))
 
   private def makeMultiMap[K,V] = new mutable.HashMap[K, mutable.Set[V]] with mutable.MultiMap[K,V]
@@ -217,8 +217,16 @@ object CheckCombLoops extends Pass {
       (edges mapValues { _.toSet }).toMap[LogicNode, Set[LogicNode]])
   }
 
-  private def reportCycle(e: Errors, m: DefModule, moduleGraphs: mutable.HashMap[String,DepGraph[LogicNode]], moduleDeps: mutable.HashMap[String, mutable.HashMap[String,String]])(cycle: List[LogicNode]) = {
-    e.append(new CombLoopException(m.info,m.name,cycle))
+  private def recoverCycle(m: String, moduleGraphs: mutable.HashMap[String,DepGraph[LogicNode]], moduleDeps: mutable.HashMap[String, mutable.HashMap[String,String]],cycle: List[LogicNode]): List[String] = {
+    val cycNodes = (cycle zip cycle.tail) map { case (a, b) =>
+      if (a.inst.isDefined && !a.memport.isDefined && a.inst == b.inst) {
+        val child = moduleDeps(m)(a.inst.get)
+        recoverCycle(child,moduleGraphs,moduleDeps,moduleGraphs(child).path(b.copy(inst=None),a.copy(inst=None)).tail.reverse)
+      } else {
+        List(a.toString)
+      }
+    }
+    cycNodes.flatten ++ List(cycle.last.toString)
   }
 
   def run(c: Circuit): Circuit = {
@@ -236,7 +244,7 @@ object CheckCombLoops extends Pass {
     for (m <- topoSortedModules) {
       val internalDeps = getInternalDeps(simplifiedModules,m)
       val cycles = internalDeps.findCycles
-      cycles map reportCycle(errors,m,moduleGraphs,moduleDeps)
+      cycles map (c => errors.append(new CombLoopException(m.info, m.name, recoverCycle(m.name,moduleGraphs,moduleDeps,c))))
       moduleGraphs(m.name) = internalDeps
       simplifiedModules(m.name) = internalDeps.simplify((m.ports map { p => LogicNode(p.name) }).toSet)
     }
