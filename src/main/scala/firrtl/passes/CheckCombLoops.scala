@@ -14,8 +14,8 @@ import annotation.tailrec
 object CheckCombLoops extends Pass {
   def name = "Check Loops"
 
-  class CombLoopException(info: Info, mname: String) extends PassException(
-    s"$info: [module $mname] Combinational loop detected.")
+  class CombLoopException(info: Info, mname: String, cycle: List[LogicNode]) extends PassException(
+    s"$info: [module $mname] Combinational loop detected: " + cycle)
 
   private def makeMultiMap[K,V] = new mutable.HashMap[K, mutable.Set[V]] with mutable.MultiMap[K,V]
 
@@ -197,7 +197,7 @@ object CheckCombLoops extends Pass {
   }
 
   private def reportCycle(e: Errors, m: DefModule)(cycle: List[LogicNode]) = {
-    e.append(new CombLoopException(m.info,m.name))
+    e.append(new CombLoopException(m.info,m.name,cycle))
   }
 
   def run(c: Circuit): Circuit = {
@@ -212,10 +212,7 @@ object CheckCombLoops extends Pass {
     val topoSortedModules = moduleDepGraph.linearize(c.main).reverse map {moduleMap(_)}
     val simplifiedModules = new mutable.HashMap[String,DepGraph[LogicNode]]
     for (m <- topoSortedModules) {
-      println(m.name)
       val internalDeps = getInternalDeps(simplifiedModules,m)
-      println(internalDeps.vertices)
-      println(internalDeps.edges)
       val cycles = internalDeps.findCycles
       cycles map reportCycle(errors,m)
       simplifiedModules(m.name) = internalDeps.simplify(m.ports map { p => LogicNode(p.name) })

@@ -163,6 +163,7 @@ case class FirrtlExecutionOptions(
       case "low"       => new LowFirrtlCompiler()
       case "middle"    => new MiddleFirrtlCompiler()
       case "verilog"   => new VerilogCompiler()
+      case "checkloops" => new CheckLoopsCompiler()
     }
   }
 
@@ -172,6 +173,7 @@ case class FirrtlExecutionOptions(
       case "low"       => "lo.fir"
       case "high"      => "hi.fir"
       case "middle"    => "mid.fir"
+      case "checkloops" => "lo.fir"
       case _ =>
         throw new Exception(s"Illegal compiler name $compilerName")
     }
@@ -254,7 +256,7 @@ trait HasFirrtlOptions {
       firrtlOptions = firrtlOptions.copy(compilerName = x)
     }
     .validate { x =>
-      if (Array("high", "middle", "low", "verilog").contains(x.toLowerCase)) parser.success
+      if (Array("high", "middle", "low", "verilog", "checkloops").contains(x.toLowerCase)) parser.success
       else parser.failure(s"$x not a legal compiler")
     }.text {
       s"compiler to use, default is ${firrtlOptions.compilerName}"

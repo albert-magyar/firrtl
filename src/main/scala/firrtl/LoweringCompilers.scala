@@ -108,7 +108,6 @@ class LowFirrtlOptimization extends CoreTransform {
     passes.DeadCodeElimination)
 }
 
-
 import CompilerUtils.getLoweringTransforms
 import firrtl.transforms.BlackBoxSourceHelper
 
@@ -137,4 +136,16 @@ class VerilogCompiler extends Compiler {
   def emitter = new VerilogEmitter
   def transforms: Seq[Transform] =
     getLoweringTransforms(ChirrtlForm, LowForm) ++ Seq(new LowFirrtlOptimization, new BlackBoxSourceHelper)
+}
+
+class CheckLoopsTransform extends CoreTransform {
+  def inputForm = HighForm
+  def outputForm = LowForm
+  def passSeq = Seq(
+    passes.CheckCombLoops)
+}
+
+class CheckLoopsCompiler extends Compiler {
+  def emitter = new FirrtlEmitter
+  def transforms: Seq[Transform] = Seq(new CheckLoopsTransform)
 }
