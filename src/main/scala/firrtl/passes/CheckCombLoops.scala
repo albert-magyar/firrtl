@@ -108,6 +108,8 @@ object CheckCombLoops extends Pass {
         }
       }
 
+      // TODO: avoid "wrapping" submodule paths around end
+      // Perhaps not starting strongconnect on something with an inst value
       for (v <- vertices) {
         strongConnect(v)
       }
