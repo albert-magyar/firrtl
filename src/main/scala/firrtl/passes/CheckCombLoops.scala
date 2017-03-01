@@ -22,115 +22,6 @@ object CheckCombLoops extends Pass {
   private case class LogicNode(name: String, inst: Option[String] = None, memport: Option[String] = None)
 
   // Dependency edges go from dependent to source
-  private class DepGraph[T] (
-    val vertices: Set[T] = new HashSet[T],
-    val edges: Map[T, Set[T]] = new HashMap[T, HashSet[T]]) {
-    
-    def getVertices = vertices
-    def getEdges(v: T) = edges.getOrElse(v, new HashSet[T])
-
-    // Graph must be acyclic for valid linearization
-    def linearize(root: T) = {
-      val order = new mutable.ArrayBuffer[T]
-      val visited = new mutable.HashSet[T]
-      def explore(v: T): Unit = {
-        visited += v
-        for (u  <- getEdges(v)) {
-          if (!visited.contains(u)) {
-            explore(u)
-          }
-        }
-        order.append(v)
-      }
-      explore(root)
-      order.reverse.toList
-    }
-
-    def doBFS(root: T) = {
-      val prev = new mutable.HashMap[T,T]
-      val queue = new mutable.Queue[T]
-      queue.enqueue(root)
-      while (!queue.isEmpty) {
-        val u = queue.dequeue
-        for (v <- getEdges(u)) {
-          if (!prev.contains(v)) {
-            prev(v) = u
-            queue.enqueue(v)
-          }
-        }
-      }
-      prev
-    }
-
-    def reachabilityBFS(root: T) = doBFS(root).keys.toSet
-
-    def path(start: T, end: T) = {
-      val nodePath = new mutable.ArrayBuffer[T]
-      val prev = doBFS(start)
-      nodePath += end
-      while (nodePath.last != start) {
-        nodePath += prev(nodePath.last)
-      }
-      nodePath.toList.reverse
-    }
-
-    def findCycles = {
-      var counter: BigInt = 0
-      val stack = new mutable.Stack[T]
-      val onstack = new mutable.HashSet[T]
-      val indices = new mutable.HashMap[T, BigInt]
-      val lowlinks = new mutable.HashMap[T, BigInt]
-      val nonTrivialSCCs = new mutable.ArrayBuffer[List[T]]
-
-      def strongConnect(v: T): Unit = {
-        indices(v) = counter
-        lowlinks(v) = counter
-        counter = counter + 1
-        stack.push(v)
-        onstack += v
-        for (w <- getEdges(v)) {
-          if (!indices.contains(w)) {
-            strongConnect(w)
-            lowlinks(v) = lowlinks(v).min(lowlinks(w))
-          } else if (onstack.contains(w)) {
-            lowlinks(v) = lowlinks(v).min(indices(w))
-          }
-        }
-        if (lowlinks(v) == indices(v)) {
-          val scc = new mutable.ArrayBuffer[T]
-          do {
-            val w = stack.pop
-            onstack -= w
-            scc += w } while (scc.last != v)
-          if (scc.length > 1) {
-            nonTrivialSCCs.append(scc.toList)
-          }
-        }
-      }
-
-      // TODO: avoid "wrapping" submodule paths around end
-      // Perhaps not starting strongconnect on something with an inst value
-      for (v <- vertices) {
-        strongConnect(v)
-      }
-
-      nonTrivialSCCs.toList
-    }
-
-
-
-    def simplify(vprime: Set[T]) = {
-      val eprime = vprime.map( v => (v,reachabilityBFS(v) & vprime) ).toMap
-      new DepGraph(vprime.toSet, eprime)
-    }
-
-    def transformNodes(f: (T) => T) = {
-      val vprime = vertices.map(f)
-      val eprime = edges.map({ case (k,v) => (f(k),v.map(f(_))) })
-      new DepGraph(vprime,eprime)
-    }
-
-  }
 
   private def getInstanceGraph(deps: mutable.HashMap[String,String])(s: Statement): Statement = s match {
     case i: WDefInstance =>
@@ -169,7 +60,7 @@ object CheckCombLoops extends Pass {
   }
 
   private def getStmtDeps(
-    simplifiedModules: mutable.HashMap[String,DepGraph[LogicNode]],
+    simplifiedModules: mutable.HashMap[String,DiGraph[LogicNode]],
     nodes: mutable.Set[LogicNode],
     deps: mutable.MultiMap[LogicNode,LogicNode])(s: Statement): Statement = s match {
     case c: Connect =>
@@ -209,17 +100,17 @@ object CheckCombLoops extends Pass {
   }
 
   private def getInternalDeps(
-    simplifiedModules: mutable.HashMap[String,DepGraph[LogicNode]],
-    m: DefModule): DepGraph[LogicNode] = {
+    simplifiedModules: mutable.HashMap[String,DiGraph[LogicNode]],
+    m: DefModule): DiGraph[LogicNode] = {
     val vertices = new mutable.HashSet[LogicNode]
     val edges = makeMultiMap[LogicNode,LogicNode]
     vertices ++= m.ports map { p => LogicNode(p.name) }
     m map getStmtDeps(simplifiedModules, vertices, edges)
-    new DepGraph(vertices.toSet, 
+    new DiGraph(vertices.toSet, 
       (edges mapValues { _.toSet }).toMap[LogicNode, Set[LogicNode]])
   }
 
-  private def recoverCycle(m: String, moduleGraphs: mutable.HashMap[String,DepGraph[LogicNode]], moduleDeps: mutable.HashMap[String, mutable.HashMap[String,String]], prefix: String, cycle: List[LogicNode]): List[String] = {
+  private def recoverCycle(m: String, moduleGraphs: mutable.HashMap[String,DiGraph[LogicNode]], moduleDeps: mutable.HashMap[String, mutable.HashMap[String,String]], prefix: String, cycle: List[LogicNode]): List[String] = {
     val cycNodes = (cycle zip cycle.tail) map { case (a, b) =>
       if (a.inst.isDefined && !a.memport.isDefined && a.inst == b.inst) {
         val child = moduleDeps(m)(a.inst.get)
@@ -232,6 +123,16 @@ object CheckCombLoops extends Pass {
     cycNodes.flatten ++ List(prefix + cycle.last.name.toString)
   }
 
+/*
+  private class ModuleLoopChecker(m: DefModule, otherModules: Map[String,ModuleLoopChecker]) {
+    val name = m.name
+    // map instname -> moduledata
+    val children = ...
+    val nodes = empty set
+    val deps = empty map
+    getInstanceGraph(
+ */
+
   def run(c: Circuit): Circuit = {
 
     val errors = new Errors()
@@ -239,11 +140,11 @@ object CheckCombLoops extends Pass {
     val moduleMap = c.modules.map({m => (m.name,m) }).toMap
     val moduleDeps = new mutable.HashMap[String, mutable.HashMap[String,String]]
     c.modules.map( m => m map getInstanceGraph(moduleDeps.getOrElseUpdate(m.name, new mutable.HashMap[String,String])) )
-    val moduleDepGraph = new DepGraph(moduleMap.keys.toSet,
+    val moduleDiGraph = new DiGraph(moduleMap.keys.toSet,
       (moduleDeps mapValues { _.values.toSet }).toMap[String, Set[String]])
-    val topoSortedModules = moduleDepGraph.linearize(c.main).reverse map {moduleMap(_)}
-    val moduleGraphs = new mutable.HashMap[String,DepGraph[LogicNode]]
-    val simplifiedModules = new mutable.HashMap[String,DepGraph[LogicNode]]
+    val topoSortedModules = moduleDiGraph.linearize(c.main).reverse map {moduleMap(_)}
+    val moduleGraphs = new mutable.HashMap[String,DiGraph[LogicNode]]
+    val simplifiedModules = new mutable.HashMap[String,DiGraph[LogicNode]]
     for (m <- topoSortedModules) {
       val internalDeps = getInternalDeps(simplifiedModules,m)
       val cycles = internalDeps.findCycles
