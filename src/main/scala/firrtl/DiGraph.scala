@@ -2,9 +2,10 @@ package firrtl
 
 import scala.collection.immutable.{HashSet, HashMap}
 import scala.collection.mutable
+import scala.collection.mutable.MultiMap
 
-class MutableDiGraph[T] {
-  val edgeData = new mutable.HashMap[T, mutable.Set[T]] with mutable.MultiMap[T, T]
+class MutableDiGraph[T](
+  val edgeData: MultiMap[T,T] = new mutable.HashMap[T, mutable.Set[T]] with MultiMap[T, T]) {
   def contains(v: T) = edgeData.contains(v)
   def getVertices = edgeData.keys
   def getEdges(v: T) = edgeData(v)
@@ -12,17 +13,21 @@ class MutableDiGraph[T] {
     edgeData.getOrElseUpdate(v,new mutable.HashSet[T])
     v
   }
-  def addEdge(u: T, v: T) = edgeData.addBinding(u,v)
-  def toDiGraph = new DiGraph(edgeData.keys.toSet,
-      (edgeData mapValues { _.toSet }).toMap[T, Set[T]])
+  // Add v to keys to maintain invariant
+  def addEdge(u: T, v: T) = {
+    edgeData.getOrElseUpdate(v, new mutable.HashSet[T])
+    edgeData.addBinding(u,v)
+  }
 }
 
+object DiGraph {
+  def apply[T](mdg: MutableDiGraph[T]) = new DiGraph((mdg.edgeData mapValues { _.toSet }).toMap[T, Set[T]])
+  def apply[T](edgeData: MultiMap[T,T]) = new DiGraph((edgeData mapValues { _.toSet }).toMap[T, Set[T]])
+}
 
-class DiGraph[T] (
-  val vertices: Set[T] = new HashSet[T],
-  val edges: Map[T, Set[T]] = new HashMap[T, HashSet[T]]) {
+class DiGraph[T] (val edges: Map[T, Set[T]]) {
   
-  def getVertices = vertices
+  def getVertices = edges.keys
   def getEdges(v: T) = edges.getOrElse(v, new HashSet[T])
 
   // Graph must be acyclic for valid linearization
@@ -104,24 +109,27 @@ class DiGraph[T] (
       }
     }
 
-    for (v <- vertices) {
+    for (v <- getVertices) {
       strongConnect(v)
     }
 
     nonTrivialSCCs.toList
   }
 
-
+  def reverse = {
+    val mdg = new MutableDiGraph[T]
+    edges foreach { case (u,edges) => edges.foreach({ v => mdg.addEdge(v,u) }) }
+    DiGraph(mdg)
+  }
 
   def simplify(vprime: Set[T]) = {
     val eprime = vprime.map( v => (v,reachabilityBFS(v) & vprime) ).toMap
-    new DiGraph(vprime.toSet, eprime)
+    new DiGraph(eprime)
   }
 
   def transformNodes[Q](f: (T) => Q): DiGraph[Q] = {
-    val vprime = vertices.map(f)
     val eprime = edges.map({ case (k,v) => (f(k),v.map(f(_))) })
-    new DiGraph(vprime,eprime)
+    new DiGraph(eprime)
   }
 
 }

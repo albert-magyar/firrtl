@@ -2,22 +2,22 @@
 
 package firrtl.passes
 
-import firrtl._
-import firrtl.ir._
-import firrtl.Utils._
-import firrtl.Mappers._
 import scala.collection.mutable
 import scala.collection.immutable.HashSet
 import scala.collection.immutable.HashMap
 import annotation.tailrec
+
+import firrtl._
+import firrtl.ir._
+import firrtl.Utils._
+import firrtl.Mappers._
+import firrtl.analyses.InstanceGraph
 
 object CheckCombLoops extends Pass {
   def name = "Check Loops"
 
   class CombLoopException(info: Info, mname: String, cycle: List[String]) extends PassException(
     s"$info: [module $mname] Combinational loop detected:\n" + cycle.mkString("\n"))
-
-  private def makeMultiMap[K,V] = new mutable.HashMap[K, mutable.Set[V]] with mutable.MultiMap[K,V]
 
   private case class LogicNode(name: String, inst: Option[String] = None, memport: Option[String] = None)
 
@@ -93,7 +93,7 @@ object CheckCombLoops extends Pass {
     val deps = new MutableDiGraph[LogicNode]
     m.ports foreach { p => deps.addVertex(LogicNode(p.name)) }
     m map getStmtDeps(simplifiedModules, deps)
-    deps.toDiGraph
+    DiGraph(deps)
   }
 
   private def recoverCycle(m: String, moduleGraphs: mutable.HashMap[String,DiGraph[LogicNode]], moduleDeps: mutable.HashMap[String, mutable.HashMap[String,String]], prefix: String, cycle: List[LogicNode]): List[String] = {
@@ -119,22 +119,31 @@ object CheckCombLoops extends Pass {
     getInstanceGraph(
  */
 
+  private def getInstanceGraph(deps: mutable.HashMap[String,String])(s: Statement): Statement = s match {
+    case i: WDefInstance =>
+      deps(i.name) = i.module
+      i
+    case _ =>
+      s map getInstanceGraph(deps)
+      s
+  }
+
   def run(c: Circuit): Circuit = {
 
     val errors = new Errors()
 
     val moduleMap = c.modules.map({m => (m.name,m) }).toMap
+    val iGraph = new InstanceGraph(c)
     val moduleDeps = new mutable.HashMap[String, mutable.HashMap[String,String]]
     c.modules.map( m => m map getInstanceGraph(moduleDeps.getOrElseUpdate(m.name, new mutable.HashMap[String,String])) )
-    val moduleDiGraph = new DiGraph(moduleMap.keys.toSet,
-      (moduleDeps mapValues { _.values.toSet }).toMap[String, Set[String]])
-    val topoSortedModules = moduleDiGraph.linearize(c.main).reverse map {moduleMap(_)}
+    val topoSortedModules = iGraph.graph.transformNodes(_.module).linearize(c.main).reverse map { moduleMap(_) }
     val moduleGraphs = new mutable.HashMap[String,DiGraph[LogicNode]]
     val simplifiedModules = new mutable.HashMap[String,DiGraph[LogicNode]]
     for (m <- topoSortedModules) {
       val internalDeps = getInternalDeps(simplifiedModules,m)
       val cycles = internalDeps.findCycles
-      cycles map (c => errors.append(new CombLoopException(m.info, m.name, recoverCycle(m.name,moduleGraphs,moduleDeps,m.name + ".",c))))
+      cycles map (c => errors.append(new CombLoopException(m.info, m.name, recoverCycle(m.name,moduleGraphs,moduleDeps
+,m.name + ".",c))))
       moduleGraphs(m.name) = internalDeps
       simplifiedModules(m.name) = internalDeps.simplify((m.ports map { p => LogicNode(p.name) }).toSet)
     }
