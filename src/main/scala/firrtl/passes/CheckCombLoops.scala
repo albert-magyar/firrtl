@@ -23,14 +23,6 @@ object CheckCombLoops extends Pass {
 
   // Dependency edges go from dependent to source
 
-  private def getInstanceGraph(deps: mutable.HashMap[String,String])(s: Statement): Statement = s match {
-    case i: WDefInstance =>
-      deps(i.name) = i.module
-      i
-    case _ =>
-      s map getInstanceGraph(deps)
-      s
-  }
 
   private def toLogicNode(e: Expression): LogicNode = e match {
     case r: WRef =>
@@ -61,53 +53,47 @@ object CheckCombLoops extends Pass {
 
   private def getStmtDeps(
     simplifiedModules: mutable.HashMap[String,DiGraph[LogicNode]],
-    nodes: mutable.Set[LogicNode],
-    deps: mutable.MultiMap[LogicNode,LogicNode])(s: Statement): Statement = s match {
+    deps: MutableDiGraph[LogicNode])(s: Statement): Statement = s match {
     case c: Connect =>
       val lhs = toLogicNode(c.loc)
-      if (nodes.contains(lhs)) {
-        getExprDeps(deps.getOrElseUpdate(lhs,new mutable.HashSet[LogicNode]))(c.expr)
+      if (deps.contains(lhs)) {
+        getExprDeps(deps.getEdges(lhs))(c.expr)
       }
       c
     case w: DefWire =>
-      nodes += LogicNode(w.name)
+      deps.addVertex(LogicNode(w.name))
       w
     case n: DefNode =>
       val lhs = LogicNode(n.name)
-      nodes += lhs
-      getExprDeps(deps.getOrElseUpdate(lhs,new mutable.HashSet[LogicNode]))(n.value)
+      deps.addVertex(lhs)
+      getExprDeps(deps.getEdges(lhs))(n.value)
       n
-    case m: DefMemory =>
-      if (m.readLatency == 0) {
-        for (rp <- m.readers) {
-          val dataNode = LogicNode("data",Some(m.name),Some(rp))
-          val addrNode = LogicNode("addr",Some(m.name),Some(rp))
-          val enNode = LogicNode("en",Some(m.name),Some(rp))
-          nodes ++= Seq(dataNode,addrNode,enNode)
-          deps(dataNode) = new mutable.HashSet[LogicNode]
-          deps(dataNode) ++= Seq(addrNode,enNode)
-        }
+    case m: DefMemory if (m.readLatency == 0) =>
+      for (rp <- m.readers) {
+        val dataNode = deps.addVertex(LogicNode("data",Some(m.name),Some(rp)))
+        deps.addEdge(dataNode, deps.addVertex(LogicNode("addr",Some(m.name),Some(rp))))
+        deps.addEdge(dataNode, deps.addVertex(LogicNode("en",Some(m.name),Some(rp))))
       }
       m
     case i: WDefInstance =>
       val iGraph = simplifiedModules(i.module).transformNodes(n => n.copy(inst = Some(i.name)))
-      nodes ++= iGraph.vertices
-      deps ++= iGraph.edges.map({ case (k, v) => (k, mutable.HashSet(v.toList:_*)) }).toList
+      for (v <- iGraph.getVertices) {
+        deps.addVertex(v)
+        iGraph.getEdges(v).foreach { deps.addEdge(v,_) }
+      }
       i
     case _ =>
-      s map getStmtDeps(simplifiedModules,nodes,deps)
+      s map getStmtDeps(simplifiedModules,deps)
       s
   }
 
   private def getInternalDeps(
     simplifiedModules: mutable.HashMap[String,DiGraph[LogicNode]],
     m: DefModule): DiGraph[LogicNode] = {
-    val vertices = new mutable.HashSet[LogicNode]
-    val edges = makeMultiMap[LogicNode,LogicNode]
-    vertices ++= m.ports map { p => LogicNode(p.name) }
-    m map getStmtDeps(simplifiedModules, vertices, edges)
-    new DiGraph(vertices.toSet, 
-      (edges mapValues { _.toSet }).toMap[LogicNode, Set[LogicNode]])
+    val deps = new MutableDiGraph[LogicNode]
+    m.ports foreach { p => deps.addVertex(LogicNode(p.name)) }
+    m map getStmtDeps(simplifiedModules, deps)
+    deps.toDiGraph
   }
 
   private def recoverCycle(m: String, moduleGraphs: mutable.HashMap[String,DiGraph[LogicNode]], moduleDeps: mutable.HashMap[String, mutable.HashMap[String,String]], prefix: String, cycle: List[LogicNode]): List[String] = {

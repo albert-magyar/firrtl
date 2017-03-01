@@ -8,7 +8,10 @@ class MutableDiGraph[T] {
   def contains(v: T) = edgeData.contains(v)
   def getVertices = edgeData.keys
   def getEdges(v: T) = edgeData(v)
-  def addVertex(v: T) = edgeData.getOrElseUpdate(v,new mutable.HashSet[T])
+  def addVertex(v: T): T = {
+    edgeData.getOrElseUpdate(v,new mutable.HashSet[T])
+    v
+  }
   def addEdge(u: T, v: T) = edgeData.addBinding(u,v)
   def toDiGraph = new DiGraph(edgeData.keys.toSet,
       (edgeData mapValues { _.toSet }).toMap[T, Set[T]])
