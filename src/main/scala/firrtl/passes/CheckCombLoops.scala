@@ -52,7 +52,7 @@ object CheckCombLoops extends Pass {
   }
 
   private def getStmtDeps(
-    simplifiedModules: mutable.HashMap[String,DiGraph[LogicNode]],
+    simplifiedModules: mutable.Map[String,DiGraph[LogicNode]],
     deps: MutableDiGraph[LogicNode])(s: Statement): Statement = s match {
     case c: Connect =>
       val lhs = toLogicNode(c.loc)
@@ -87,68 +87,44 @@ object CheckCombLoops extends Pass {
       s
   }
 
-  private def getInternalDeps(
-    simplifiedModules: mutable.HashMap[String,DiGraph[LogicNode]],
-    m: DefModule): DiGraph[LogicNode] = {
-    val deps = new MutableDiGraph[LogicNode]
-    m.ports foreach { p => deps.addVertex(LogicNode(p.name)) }
-    m map getStmtDeps(simplifiedModules, deps)
-    DiGraph(deps)
-  }
-
-  private def recoverCycle(m: String, moduleGraphs: mutable.HashMap[String,DiGraph[LogicNode]], moduleDeps: mutable.HashMap[String, mutable.HashMap[String,String]], prefix: String, cycle: List[LogicNode]): List[String] = {
+  private def recoverCycle(m: String, moduleGraphs: mutable.Map[String,DiGraph[LogicNode]], moduleDeps: Map[String, Map[String,String]], prefix: List[String], cycle: List[LogicNode]): List[String] = {
+    def absNodeName(prefix: List[String], n: LogicNode) = 
+      (prefix ++ n.inst ++ n.memport :+ n.name).mkString(".")
     val cycNodes = (cycle zip cycle.tail) map { case (a, b) =>
       if (a.inst.isDefined && !a.memport.isDefined && a.inst == b.inst) {
         val child = moduleDeps(m)(a.inst.get)
-        val newprefix = prefix + a.inst.get + "."
-        recoverCycle(child,moduleGraphs,moduleDeps,newprefix,moduleGraphs(child).path(b.copy(inst=None),a.copy(inst=None)).tail.reverse)
+        val newprefix = prefix :+ a.inst.get
+        val subpath = moduleGraphs(child).path(b.copy(inst=None),a.copy(inst=None)).tail.reverse
+        recoverCycle(child,moduleGraphs,moduleDeps,newprefix,subpath)
       } else {
-        List(prefix + a.name.toString)
+        List(absNodeName(prefix,a))
       }
     }
-    cycNodes.flatten ++ List(prefix + cycle.last.name.toString)
+    cycNodes.flatten :+ absNodeName(prefix, cycle.last)
   }
 
-/*
-  private class ModuleLoopChecker(m: DefModule, otherModules: Map[String,ModuleLoopChecker]) {
-    val name = m.name
-    // map instname -> moduledata
-    val children = ...
-    val nodes = empty set
-    val deps = empty map
-    getInstanceGraph(
- */
 
-  private def getInstanceGraph(deps: mutable.HashMap[String,String])(s: Statement): Statement = s match {
-    case i: WDefInstance =>
-      deps(i.name) = i.module
-      i
-    case _ =>
-      s map getInstanceGraph(deps)
-      s
-  }
-
+  // TODO: deal with exmodules!
   def run(c: Circuit): Circuit = {
-
     val errors = new Errors()
-
     val moduleMap = c.modules.map({m => (m.name,m) }).toMap
     val iGraph = new InstanceGraph(c)
-    val moduleDeps = new mutable.HashMap[String, mutable.HashMap[String,String]]
-    c.modules.map( m => m map getInstanceGraph(moduleDeps.getOrElseUpdate(m.name, new mutable.HashMap[String,String])) )
+    val moduleDeps = iGraph.graph.edges.map{ case (k,v) => (k.module, (v map { i => (i.name, i.module) }).toMap) }
     val topoSortedModules = iGraph.graph.transformNodes(_.module).linearize(c.main).reverse map { moduleMap(_) }
     val moduleGraphs = new mutable.HashMap[String,DiGraph[LogicNode]]
-    val simplifiedModules = new mutable.HashMap[String,DiGraph[LogicNode]]
+    val simplifiedModuleGraphs = new mutable.HashMap[String,DiGraph[LogicNode]]
     for (m <- topoSortedModules) {
-      val internalDeps = getInternalDeps(simplifiedModules,m)
-      val cycles = internalDeps.findCycles
-      cycles map (c => errors.append(new CombLoopException(m.info, m.name, recoverCycle(m.name,moduleGraphs,moduleDeps
-,m.name + ".",c))))
-      moduleGraphs(m.name) = internalDeps
-      simplifiedModules(m.name) = internalDeps.simplify((m.ports map { p => LogicNode(p.name) }).toSet)
+      val internalDeps = new MutableDiGraph[LogicNode]
+      m.ports foreach { p => internalDeps.addVertex(LogicNode(p.name)) }
+      m map getStmtDeps(simplifiedModuleGraphs, internalDeps)
+      moduleGraphs(m.name) = DiGraph(internalDeps)
+      simplifiedModuleGraphs(m.name) = moduleGraphs(m.name).simplify((m.ports map { p => LogicNode(p.name) }).toSet)
+      for (scc <- moduleGraphs(m.name).findSCCs.filter(_.length > 1)) {
+        val cycle = recoverCycle(m.name,moduleGraphs,moduleDeps,List(m.name),scc :+ scc.head)
+        errors.append(new CombLoopException(m.info, m.name, cycle))
+      }
     }
     errors.trigger()
-
     c
   }
 

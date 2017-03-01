@@ -75,13 +75,13 @@ class DiGraph[T] (val edges: Map[T, Set[T]]) {
     nodePath.toList.reverse
   }
 
-  def findCycles = {
+  def findSCCs = {
     var counter: BigInt = 0
     val stack = new mutable.Stack[T]
     val onstack = new mutable.HashSet[T]
     val indices = new mutable.HashMap[T, BigInt]
     val lowlinks = new mutable.HashMap[T, BigInt]
-    val nonTrivialSCCs = new mutable.ArrayBuffer[List[T]]
+    val sccs = new mutable.ArrayBuffer[List[T]]
 
     def strongConnect(v: T): Unit = {
       indices(v) = counter
@@ -102,10 +102,10 @@ class DiGraph[T] (val edges: Map[T, Set[T]]) {
         do {
           val w = stack.pop
           onstack -= w
-          scc += w } while (scc.last != v)
-          if (scc.length > 1) {
-            nonTrivialSCCs.append(scc.toList)
-          }
+          scc += w
+        }
+        while (scc.last != v);
+        sccs.append(scc.toList)
       }
     }
 
@@ -113,7 +113,30 @@ class DiGraph[T] (val edges: Map[T, Set[T]]) {
       strongConnect(v)
     }
 
-    nonTrivialSCCs.toList
+    sccs.toList
+  }
+
+  def pathsInDAG(start: T): Map[T,List[List[T]]] = {
+    // paths(v) holds the set of paths from start to v
+    val paths = new mutable.HashMap[T,mutable.Set[List[T]]] with mutable.MultiMap[T,List[T]]
+    val queue = new mutable.Queue[T]
+    val visited = new mutable.HashSet[T]
+    paths.addBinding(start,List(start))
+    queue.enqueue(start)
+    visited += start
+    while (!queue.isEmpty) {
+      val current = queue.dequeue
+      for (v <- getEdges(current)) {
+        if (!visited.contains(v)) {
+          queue.enqueue(v)
+          visited += v
+        }
+        for (p <- paths(current)) {
+          paths.addBinding(v, p :+ v)
+        }
+      }
+    }
+    (paths map { case (k,v) => (k,v.toList) }).toMap
   }
 
   def reverse = {
