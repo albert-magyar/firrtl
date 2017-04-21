@@ -15,7 +15,8 @@ class ChirrtlToHighFirrtl extends CoreTransform {
     passes.CheckChirrtl,
     passes.CInferTypes,
     passes.CInferMDir,
-    passes.RemoveCHIRRTL)
+    passes.RemoveCHIRRTL,
+    passes.MultipumpMem)
 }
 
 /** Converts from the bare intermediate representation (ir.scala)
