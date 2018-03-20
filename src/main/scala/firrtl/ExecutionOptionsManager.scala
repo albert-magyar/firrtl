@@ -210,6 +210,7 @@ extends ComposableOptions {
       case "middle"    => new MiddleFirrtlCompiler()
       case "verilog"   => new VerilogCompiler()
       case "sverilog"  => new SystemVerilogCompiler()
+      case "uclid"     => new UclidCompiler()
     }
   }
 
@@ -217,6 +218,7 @@ extends ComposableOptions {
     compilerName match {
       case "verilog"   => "v"
       case "sverilog"  => "sv"
+      case "uclid"     => "ucl"
       case "low"       => "lo.fir"
       case "high"      => "hi.fir"
       case "middle"    => "mid.fir"
@@ -268,6 +270,7 @@ extends ComposableOptions {
       case "low" => classOf[LowFirrtlEmitter]
       case "verilog" => classOf[VerilogEmitter]
       case "sverilog" => classOf[VerilogEmitter]
+      case "uclid" => classOf[UclidEmitter]
     }
     getOutputConfig(optionsManager) match {
       case SingleFile(_) => Seq(EmitCircuitAnnotation(emitter))
@@ -344,12 +347,12 @@ trait HasFirrtlOptions {
 
   parser.opt[String]("compiler")
     .abbr("X")
-    .valueName ("<high|middle|low|verilog|sverilog>")
+    .valueName ("<high|middle|low|verilog|sverilog|uclid>")
     .foreach { x =>
       firrtlOptions = firrtlOptions.copy(compilerName = x)
     }
     .validate { x =>
-      if (Array("high", "middle", "low", "verilog", "sverilog").contains(x.toLowerCase)) parser.success
+      if (Array("high", "middle", "low", "verilog", "sverilog", "uclid").contains(x.toLowerCase)) parser.success
       else parser.failure(s"$x not a legal compiler")
     }.text {
       s"compiler to use, default is ${firrtlOptions.compilerName}"
@@ -492,7 +495,7 @@ object FirrtlExecutionSuccess {
   * Indicates a successful execution of the firrtl compiler, returning the compiled result and
   * the type of compile
   *
-  * @param emitType  The name of the compiler used, currently "high", "middle", "low", "verilog", or "sverilog"
+  * @param emitType  The name of the compiler used, currently "high", "middle", "low", "verilog", "sverilog", or "uclid"
   * @param emitted   The emitted result of compilation
   */
 class FirrtlExecutionSuccess(
