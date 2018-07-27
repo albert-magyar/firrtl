@@ -36,7 +36,7 @@ case class CombinationalPath(sink: ComponentName, sources: Seq[ComponentName]) e
 
 /** Finds and detects combinational logic loops in a circuit, if any
   * exist. Returns the input circuit with no modifications.
-  * 
+  *
   * @throws CombLoopException if a loop is found
   * @note Input form: Low FIRRTL
   * @note Output form: Low FIRRTL (identity transform)
@@ -137,7 +137,7 @@ class CheckCombLoops extends Transform with RegisteredTransform {
   private def expandInstancePaths(
     m: String,
     moduleGraphs: mutable.Map[String,DiGraph[LogicNode]],
-    moduleDeps: Map[String, Map[String,String]], 
+    moduleDeps: Map[String, Map[String,String]],
     prefix: Seq[String],
     path: Seq[LogicNode]): Seq[String] = {
     def absNodeName(prefix: Seq[String], n: LogicNode) =
@@ -181,16 +181,16 @@ class CheckCombLoops extends Transform with RegisteredTransform {
    * module is converted to a netlist and analyzed locally, with its
    * subinstances represented by trivial, simplified subgraphs. The
    * overall outline of the process is:
-   * 
+   *
    * 1. Create a graph of module instance dependances
 
    * 2. Linearize this acyclic graph
-   * 
+   *
    * 3. Generate a local netlist; replace any instances with
    * simplified subgraphs representing connectivity of their IOs
-   * 
+   *
    * 4. Check for nontrivial strongly connected components
-   * 
+   *
    * 5. Create a reduced representation of the netlist with only the
    * module IOs as nodes, where output X (which must be a ground type,
    * as only low FIRRTL is supported) will have an edge to input Y if
@@ -235,6 +235,26 @@ class CheckCombLoops extends Transform with RegisteredTransform {
     }
     errors.trigger()
     (c, annos.toSeq)
+  }
+
+  def analyzeModule(c: Circuit, selectedMod: Module) = {
+    val moduleMap = c.modules.map({m => (m.name,m) }).toMap
+    val iGraph = new InstanceGraph(c).graph
+    val moduleDeps = iGraph.getEdgeMap.map({ case (k,v) => (k.module, (v map { i => (i.name, i.module) }).toMap) }).toMap
+    val topoSortedModules = iGraph.transformNodes(_.module).linearize.reverse map { moduleMap(_) }
+    val moduleGraphs = new mutable.HashMap[String,DiGraph[LogicNode]]
+    val simplifiedModuleGraphs = new mutable.HashMap[String,DiGraph[LogicNode]]
+    for (m <- topoSortedModules) {
+      if (!simplifiedModuleGraphs.contains(selectedMod.name)) {
+        val internalDeps = new MutableDiGraph[LogicNode]
+        m.ports.foreach({ p => internalDeps.addVertex(LogicNode(p.name)) })
+        m map getStmtDeps(simplifiedModuleGraphs, internalDeps)
+        val moduleGraph = DiGraph(internalDeps)
+        moduleGraphs(m.name) = moduleGraph
+        simplifiedModuleGraphs(m.name) = moduleGraphs(m.name).simplify((m.ports map { p => LogicNode(p.name) }).toSet)
+      }
+    }
+    simplifiedModuleGraphs(selectedMod.name).transformNodes(ln => ln.name)
   }
 
   def execute(state: CircuitState): CircuitState = {
