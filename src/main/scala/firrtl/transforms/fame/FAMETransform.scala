@@ -96,8 +96,8 @@ object FAMEModuleTransformer {
     }
 
     def onStmt(stmt: Statement): Statement = stmt.map(onStmt).map(onExpr) match {
-      case Connect(info, lhs, _) if (kind(lhs) == RegKind) =>
-        Conditionally(info, WRef(finishing), stmt, EmptyStmt)
+      case conn @ Connect(info, lhs, _) if (kind(lhs) == RegKind) =>
+        Conditionally(info, WRef(finishing), conn, EmptyStmt)
       case mem: DefMemory => wrapMemory(mem)
       case s => s
     }
