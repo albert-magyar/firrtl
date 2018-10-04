@@ -15,7 +15,7 @@ trait Channel {
   def direction: Direction
   def ports: collection.Set[Port]
   def tpe: Type = {
-    val fields = ports.map(p => Field(p.name, Utils.to_flip(p.direction), p.tpe))
+    val fields = ports.map(p => Field(p.name, Default, p.tpe))
     Decouple(new BundleType(fields.toSeq))
   }
   def asPort: Port = {
