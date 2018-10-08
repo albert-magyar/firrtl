@@ -16,7 +16,11 @@ trait Channel {
   def ports: collection.Set[Port]
   def tpe: Type = {
     val fields = ports.map(p => Field(p.name, Default, p.tpe))
-    Decouple(new BundleType(fields.toSeq))
+    if (fields.size > 1) {
+      Decouple(new BundleType(fields.toSeq))
+    } else {
+      Decouple(fields.head.tpe)
+    }
   }
   def asPort: Port = {
     Port(NoInfo, name, direction, tpe)
@@ -25,7 +29,11 @@ trait Channel {
   def isValid: Expression = WSubField(WRef(name, tpe, PortKind), "valid", Utils.BoolType)
   def isFiring: Expression = Reduce.and(Seq(isReady, isValid))
   def replacePortRef(wr: WRef): WSubField = {
-    WSubField(WSubField(WRef(asPort), "bits"), wr.name)
+    if (ports.size > 1) {
+      WSubField(WSubField(WRef(asPort), "bits"), wr.name)
+    } else {
+      WSubField(WRef(asPort), "bits")
+    }
   }
 }
 
