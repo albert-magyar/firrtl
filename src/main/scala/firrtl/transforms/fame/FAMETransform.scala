@@ -67,7 +67,7 @@ object FAMEModuleTransformer {
     def wrapMemory(mem: DefMemory): Block = {
       val shim = DefWire(NoInfo, mem.name, MemPortUtils.memType(mem))
       val newMem = mem.copy(name = ns.newName(mem.name))
-      val defaultConnect = Connect(NoInfo, WRef(newMem.name, shim.tpe, MemKind), WRef(shim))
+      val defaultConnect = Connect(NoInfo, WRef(shim), WRef(newMem.name, shim.tpe, MemKind))
       val syncReadPorts = (newMem.readers ++ newMem.readwriters).filter(rp => mem.readLatency > 0)
       val preserveReads = syncReadPorts.flatMap {
         case rpName =>
