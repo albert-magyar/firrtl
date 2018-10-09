@@ -89,7 +89,9 @@ object FAMEModuleTransformer {
 
     def onExpr(expr: Expression): Expression = expr.map(onExpr) match {
       case iWR @ WRef(name, tpe, PortKind, MALE) if tpe != ClockType =>
-        inChannelMap(name).replacePortRef(iWR)
+        // Generally MALE references to ports will be input channels, but RTL may use
+        // an assignment to an output port as something akin to a wire, so check output ports too.
+        inChannelMap.getOrElse(name, outChannelMap(name)).replacePortRef(iWR)
       case oWR @ WRef(name, tpe, PortKind, FEMALE) if tpe != ClockType =>
         outChannelMap(name).replacePortRef(oWR)
       case e => e
