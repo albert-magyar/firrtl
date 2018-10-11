@@ -39,8 +39,8 @@ trait Channel {
 
 case class InputChannel(val name: String, val ports: collection.Set[Port]) extends Channel {
   val direction = Input
-  def genTokenLogic(finishing: DefWire): Seq[Statement] = {
-    Seq(Connect(NoInfo, isReady, WRef(finishing)))
+  def genTokenLogic(finishing: WRef): Seq[Statement] = {
+    Seq(Connect(NoInfo, isReady, finishing))
   }
 }
 
@@ -48,11 +48,11 @@ case class OutputChannel(val name: String, val ports: collection.Set[Port], val 
   val direction = Output
   val isFired = WRef(firedReg)
   val isFiredOrFiring = Reduce.or(Seq(isFired, isFiring))
-  def genTokenLogic(finishing: DefWire, ccDeps: Iterable[InputChannel]): Seq[Statement] = {
+  def genTokenLogic(finishing: WRef, ccDeps: Iterable[InputChannel]): Seq[Statement] = {
     val regUpdate = Connect(
       NoInfo,
       isFired,
-      Mux(WRef(finishing),
+      Mux(finishing,
         UIntLiteral(0, IntWidth(1)),
         isFiredOrFiring,
         Utils.BoolType))

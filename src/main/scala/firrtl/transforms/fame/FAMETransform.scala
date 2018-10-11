@@ -14,14 +14,57 @@ import mutable.{LinkedHashSet, LinkedHashMap}
 /**************
  PRECONDITIONS:
  **************
-
- 1.) Module is flattened
- 2.) Ports do not have aggregate types (easy to support if necessary)
- 3.) There are no collisions among input/output channel names
+ 1.) Ports do not have aggregate types (easy to support if necessary)
+ 2.) There are no collisions among input/output channel names
  */
 
+object PatientMemTransformer {
+  def apply(mem: DefMemory, finishing: WRef, memClock: WRef, ns: Namespace): Block = {
+    val shim = DefWire(NoInfo, mem.name, MemPortUtils.memType(mem))
+    val newMem = mem.copy(name = ns.newName(mem.name))
+    val defaultConnect = Connect(NoInfo, WRef(shim), WRef(newMem.name, shim.tpe, MemKind))
+    val syncReadPorts = (newMem.readers ++ newMem.readwriters).filter(rp => mem.readLatency > 0)
+    val preserveReads = syncReadPorts.flatMap {
+      case rpName =>
+        val addrWidth = IntWidth(ceilLog2(mem.depth) max 1)
+        val addrReg = new DefRegister(NoInfo, ns.newName(s"${mem.name}_${rpName}"),
+          UIntType(addrWidth), memClock, UIntLiteral(0), UIntLiteral(0, addrWidth))
+        val updateReg = Connect(NoInfo, WRef(addrReg), WSubField(WSubField(WRef(shim), rpName), "addr"))
+        val useReg = Connect(NoInfo, MemPortUtils.memPortField(newMem, rpName, "addr"), WRef(addrReg))
+        Seq(addrReg, Conditionally(NoInfo, finishing, updateReg, useReg))
+    }
+    val gateWrites = (newMem.writers ++ newMem.readwriters).map {
+      case wpName =>
+        Conditionally(
+          NoInfo,
+          Negate(finishing),
+          Connect(NoInfo, MemPortUtils.memPortField(newMem, wpName, "en"), UIntLiteral(0, IntWidth(1))),
+          EmptyStmt)
+      }
+    new Block(Seq(shim, newMem, defaultConnect) ++ preserveReads ++ gateWrites)
+  }
+}
+
+object PatientSSMTransformer {
+  def apply(m: Module)(implicit triggerName: String): Module = {
+    val ns = Namespace(m)
+    val clocks = m.ports.filter(_.tpe == ClockType)
+    assert(clocks.length == 1)
+    val finishing = new Port(NoInfo, ns.newName(triggerName), Input, Utils.BoolType)
+    val hostClock = clocks.head // TODO: naming convention for host clock
+    def onStmt(stmt: Statement): Statement = stmt.map(onStmt) match {
+      case conn @ Connect(info, lhs, _) if (kind(lhs) == RegKind) =>
+        Conditionally(info, WRef(finishing), conn, EmptyStmt)
+      case mem: DefMemory => PatientMemTransformer(mem, WRef(finishing), WRef(hostClock), ns)
+      case wi: WDefInstance => new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
+      case s => s
+    }
+    Module(m.info, m.name, m.ports :+ finishing, m.body.map(onStmt))
+  }
+}
+
 object FAMEModuleTransformer {
-  def apply(c: Circuit, m: Module, ann: FAMETransformAnnotation): Module = {
+  def apply(c: Circuit, m: Module, ann: FAMETransformAnnotation)(implicit triggerName: String): Module = {
     // Step 0: Special signals & bookkeeping
     val ns = Namespace(m)
     val portMap = ann.bindToModule(m)
@@ -32,9 +75,7 @@ object FAMEModuleTransformer {
     def createHostReg(name: String = "host", width: Width = IntWidth(1)): DefRegister = {
       new DefRegister(NoInfo, ns.newName(name), UIntType(width), WRef(hostClock), WRef(hostReset), UIntLiteral(0, width))
     }
-    val finishing = DefWire(NoInfo, ns.newName("finishing"), Utils.BoolType)
-
-
+    val finishing = DefWire(NoInfo, ns.newName(triggerName), Utils.BoolType)
 
     // Step 1: Build channels
     val inChannels = portMap.getInputChannels(m).map {
@@ -64,29 +105,6 @@ object FAMEModuleTransformer {
     val transformedPorts = clocks ++ Seq(hostReset) ++ inChannels.map(_.asPort) ++ outChannels.map(_.asPort)
 
     // Step 4: Replace refs and gate state updates
-    def wrapMemory(mem: DefMemory): Block = {
-      val shim = DefWire(NoInfo, mem.name, MemPortUtils.memType(mem))
-      val newMem = mem.copy(name = ns.newName(mem.name))
-      val defaultConnect = Connect(NoInfo, WRef(shim), WRef(newMem.name, shim.tpe, MemKind))
-      val syncReadPorts = (newMem.readers ++ newMem.readwriters).filter(rp => mem.readLatency > 0)
-      val preserveReads = syncReadPorts.flatMap {
-        case rpName =>
-          val addrReg = createHostReg(s"${mem.name}_${rpName}", IntWidth(ceilLog2(mem.depth) max 1))
-          val updateReg = Connect(NoInfo, WRef(addrReg), WSubField(WSubField(WRef(shim), rpName), "addr"))
-          val useReg = Connect(NoInfo, MemPortUtils.memPortField(newMem, rpName, "addr"), WRef(addrReg))
-          Seq(addrReg, Conditionally(NoInfo, WRef(finishing), updateReg, useReg))
-      }
-      val gateWrites = (newMem.writers ++ newMem.readwriters).map {
-        case wpName =>
-          Conditionally(
-            NoInfo,
-            Negate(WRef(finishing)),
-            Connect(NoInfo, MemPortUtils.memPortField(newMem, wpName, "en"), UIntLiteral(0, IntWidth(1))),
-            EmptyStmt)
-      }
-      new Block(Seq(shim, newMem, defaultConnect) ++ preserveReads ++ gateWrites)
-    }
-
     def onExpr(expr: Expression): Expression = expr.map(onExpr) match {
       case iWR @ WRef(name, tpe, PortKind, MALE) if tpe != ClockType =>
         // Generally MALE references to ports will be input channels, but RTL may use
@@ -100,7 +118,8 @@ object FAMEModuleTransformer {
     def onStmt(stmt: Statement): Statement = stmt.map(onStmt).map(onExpr) match {
       case conn @ Connect(info, lhs, _) if (kind(lhs) == RegKind) =>
         Conditionally(info, WRef(finishing), conn, EmptyStmt)
-      case mem: DefMemory => wrapMemory(mem)
+      case mem: DefMemory => PatientMemTransformer(mem, WRef(finishing), WRef(hostClock), ns)
+      case wi: WDefInstance => new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
       case s => s
     }
 
@@ -108,8 +127,8 @@ object FAMEModuleTransformer {
 
     // Step 5: Add firing rules for output channels, trigger end of cycle
     val ruleStmts = new mutable.ArrayBuffer[Statement]
-    ruleStmts ++= outChannels.flatMap(o => o.genTokenLogic(finishing, ccDeps(o)))
-    ruleStmts ++= inChannels.flatMap(i => i.genTokenLogic(finishing))
+    ruleStmts ++= outChannels.flatMap(o => o.genTokenLogic(WRef(finishing), ccDeps(o)))
+    ruleStmts ++= inChannels.flatMap(i => i.genTokenLogic(WRef(finishing)))
     ruleStmts += Connect(NoInfo, WRef(finishing),
       Reduce.and(outChannels.map(_.isFiredOrFiring) ++ inChannels.map(_.isValid)))
 
@@ -126,9 +145,11 @@ class FAMETransform extends Transform {
     val anns = state.annotations.collect {
       case a @ FAMETransformAnnotation(ModuleName(name, _), _) => (name, a)
     }
+    implicit val triggerName = "finishing" // TODO: pick a value that does not collide
     val annMap = anns.toMap
     val transformedModules = c.modules.map {
-      case m: Module => if (annMap.contains(m.name)) FAMEModuleTransformer(c, m, annMap(m.name)) else FAMEModuleTransformer(c, m, FAMEAnnotate(c, m))
+      case m @ Module(_, c.main, _, _) => if (annMap.contains(m.name)) FAMEModuleTransformer(c, m, annMap(m.name)) else FAMEModuleTransformer(c, m, FAMEAnnotate(c, m))
+      case m: Module => PatientSSMTransformer(m)
       case m => m
     }
     state.copy(circuit = c.copy(modules = transformedModules))
