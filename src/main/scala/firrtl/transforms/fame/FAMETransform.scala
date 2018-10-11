@@ -49,9 +49,10 @@ object PatientSSMTransformer {
   def apply(m: Module)(implicit triggerName: String): Module = {
     val ns = Namespace(m)
     val clocks = m.ports.filter(_.tpe == ClockType)
-    assert(clocks.length == 1)
+    // TODO: turn this back on
+    // assert(clocks.length == 1)
     val finishing = new Port(NoInfo, ns.newName(triggerName), Input, Utils.BoolType)
-    val hostClock = clocks.head // TODO: naming convention for host clock
+    val hostClock = clocks.find(_.name == "clock").getOrElse(clocks.head) // TODO: naming convention for host clock
     def onStmt(stmt: Statement): Statement = stmt.map(onStmt) match {
       case conn @ Connect(info, lhs, _) if (kind(lhs) == RegKind) =>
         Conditionally(info, WRef(finishing), conn, EmptyStmt)
@@ -69,8 +70,9 @@ object FAMEModuleTransformer {
     val ns = Namespace(m)
     val portMap = ann.bindToModule(m)
     val clocks = m.ports.filter(_.tpe == ClockType)
-    assert(clocks.length == 1)
-    val hostClock = clocks.head // TODO: naming convention for host clock
+    // TODO: turn this back on
+    // assert(clocks.length == 1)
+    val hostClock = clocks.find(_.name == "clock").getOrElse(clocks.head) // TODO: naming convention for host clock
     val hostReset = new Port(NoInfo, ns.newName("hostReset"), Input, Utils.BoolType)
     def createHostReg(name: String = "host", width: Width = IntWidth(1)): DefRegister = {
       new DefRegister(NoInfo, ns.newName(name), UIntType(width), WRef(hostClock), WRef(hostReset), UIntLiteral(0, width))
