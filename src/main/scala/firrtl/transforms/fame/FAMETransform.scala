@@ -52,15 +52,19 @@ object PatientSSMTransformer {
     // TODO: turn this back on
     // assert(clocks.length == 1)
     val finishing = new Port(NoInfo, ns.newName(triggerName), Input, Utils.BoolType)
-    val hostClock = clocks.find(_.name == "clock").getOrElse(clocks.head) // TODO: naming convention for host clock
-    def onStmt(stmt: Statement): Statement = stmt.map(onStmt) match {
-      case conn @ Connect(info, lhs, _) if (kind(lhs) == RegKind) =>
-        Conditionally(info, WRef(finishing), conn, EmptyStmt)
-      case mem: DefMemory => PatientMemTransformer(mem, WRef(finishing), WRef(hostClock), ns)
-      case wi: WDefInstance => new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
-      case s => s
+    if (clocks.length >= 1) {
+      val hostClock = clocks.find(_.name == "clock").getOrElse(clocks.head) // TODO: naming convention for host clock
+      def onStmt(stmt: Statement): Statement = stmt.map(onStmt) match {
+        case conn @ Connect(info, lhs, _) if (kind(lhs) == RegKind) =>
+          Conditionally(info, WRef(finishing), conn, EmptyStmt)
+        case mem: DefMemory => PatientMemTransformer(mem, WRef(finishing), WRef(hostClock), ns)
+        case wi: WDefInstance => new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
+        case s => s
+      }
+      Module(m.info, m.name, m.ports :+ finishing, m.body.map(onStmt))
+    } else {
+      Module(m.info, m.name, m.ports :+ finishing, m.body)
     }
-    Module(m.info, m.name, m.ports :+ finishing, m.body.map(onStmt))
   }
 }
 
@@ -70,8 +74,8 @@ object FAMEModuleTransformer {
     val ns = Namespace(m)
     val portMap = ann.bindToModule(m)
     val clocks = m.ports.filter(_.tpe == ClockType)
-    // TODO: turn this back on
-    // assert(clocks.length == 1)
+    // TODO: turn this back to == 1
+    assert(clocks.length >= 1)
     val hostClock = clocks.find(_.name == "clock").getOrElse(clocks.head) // TODO: naming convention for host clock
     val hostReset = new Port(NoInfo, ns.newName("hostReset"), Input, Utils.BoolType)
     def createHostReg(name: String = "host", width: Width = IntWidth(1)): DefRegister = {
