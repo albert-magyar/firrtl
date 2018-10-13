@@ -2,6 +2,8 @@
 
 package firrtl.transforms.fame
 
+import java.io.PrintWriter
+
 import firrtl._
 import ir._
 import Mappers._
@@ -46,30 +48,26 @@ object PatientMemTransformer {
 }
 
 object PatientSSMTransformer {
-  def apply(m: Module)(implicit triggerName: String): Module = {
+  def apply(m: Module)(implicit triggerName: String, syncModules: Set[String]): Module = {
     val ns = Namespace(m)
     val clocks = m.ports.filter(_.tpe == ClockType)
     // TODO: turn this back on
     // assert(clocks.length == 1)
     val finishing = new Port(NoInfo, ns.newName(triggerName), Input, Utils.BoolType)
-    if (clocks.length >= 1) {
-      val hostClock = clocks.find(_.name == "clock").getOrElse(clocks.head) // TODO: naming convention for host clock
-      def onStmt(stmt: Statement): Statement = stmt.map(onStmt) match {
-        case conn @ Connect(info, lhs, _) if (kind(lhs) == RegKind) =>
-          Conditionally(info, WRef(finishing), conn, EmptyStmt)
-        case mem: DefMemory => PatientMemTransformer(mem, WRef(finishing), WRef(hostClock), ns)
-        case wi: WDefInstance => new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
-        case s => s
-      }
-      Module(m.info, m.name, m.ports :+ finishing, m.body.map(onStmt))
-    } else {
-      Module(m.info, m.name, m.ports :+ finishing, m.body)
+    val hostClock = clocks.find(_.name == "clock").getOrElse(clocks.head) // TODO: naming convention for host clock
+    def onStmt(stmt: Statement): Statement = stmt.map(onStmt) match {
+      case conn @ Connect(info, lhs, _) if (kind(lhs) == RegKind) =>
+        Conditionally(info, WRef(finishing), conn, EmptyStmt)
+      case mem: DefMemory => PatientMemTransformer(mem, WRef(finishing), WRef(hostClock), ns)
+      case wi: WDefInstance if syncModules.contains(wi.module) => new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
+      case s => s
     }
+    Module(m.info, m.name, m.ports :+ finishing, m.body.map(onStmt))
   }
 }
 
 object FAMEModuleTransformer {
-  def apply(c: Circuit, m: Module, ann: FAMETransformAnnotation)(implicit triggerName: String): Module = {
+  def apply(c: Circuit, m: Module, ann: FAMETransformAnnotation)(implicit triggerName: String, syncModules: Set[String]): Module = {
     // Step 0: Special signals & bookkeeping
     val ns = Namespace(m)
     val portMap = ann.bindToModule(m)
@@ -125,7 +123,7 @@ object FAMEModuleTransformer {
       case conn @ Connect(info, lhs, _) if (kind(lhs) == RegKind) =>
         Conditionally(info, WRef(finishing), conn, EmptyStmt)
       case mem: DefMemory => PatientMemTransformer(mem, WRef(finishing), WRef(hostClock), ns)
-      case wi: WDefInstance => new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
+      case wi: WDefInstance if syncModules.contains(wi.module) => new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
       case s => s
     }
 
@@ -147,17 +145,25 @@ class FAMETransform extends Transform {
   def outputForm = HighForm
 
   override def execute(state: CircuitState): CircuitState = {
+    val writer = new java.io.PrintWriter("/scratch/magyar/prefame.fir")
+    val emitter = new HighFirrtlEmitter
+    emitter.emit(state, writer)
     val c = state.circuit
     val anns = state.annotations.collect {
       case a @ FAMETransformAnnotation(ModuleName(name, _), _) => (name, a)
     }
     implicit val triggerName = "finishing" // TODO: pick a value that does not collide
+    implicit val syncModules = c.modules.filter(_.ports.exists(_.tpe == ClockType)).map(_.name).toSet
     val annMap = anns.toMap
     val transformedModules = c.modules.map {
       case m @ Module(_, c.main, _, _) => if (annMap.contains(m.name)) FAMEModuleTransformer(c, m, annMap(m.name)) else FAMEModuleTransformer(c, m, FAMEAnnotate(c, m))
-      case m: Module => PatientSSMTransformer(m)
+      case m: Module if syncModules.contains(m.name) => PatientSSMTransformer(m)
       case m => m
     }
-    state.copy(circuit = c.copy(modules = transformedModules))
+    val poststate = state.copy(circuit = c.copy(modules = transformedModules))
+    val postwriter = new java.io.PrintWriter("/scratch/magyar/postfame.fir")
+    val postemitter = new HighFirrtlEmitter
+    postemitter.emit(poststate, postwriter)
+    poststate
   }
 }
