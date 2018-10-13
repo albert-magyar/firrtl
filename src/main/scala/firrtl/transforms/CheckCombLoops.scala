@@ -61,6 +61,8 @@ class CheckCombLoops extends Transform {
   private case class LogicNode(name: String, inst: Option[String] = None, memport: Option[String] = None)
 
   private def toLogicNode(e: Expression): LogicNode = e match {
+    case idx: WSubIndex =>
+      toLogicNode(idx.expr)
     case r: WRef =>
       LogicNode(r.name)
     case s: WSubField =>
