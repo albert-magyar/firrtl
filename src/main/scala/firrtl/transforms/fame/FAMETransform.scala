@@ -2,7 +2,7 @@
 
 package firrtl.transforms.fame
 
-import java.io.PrintWriter
+import java.io.{PrintWriter, File}
 
 import firrtl._
 import ir._
@@ -145,7 +145,8 @@ class FAMETransform extends Transform {
   def outputForm = HighForm
 
   override def execute(state: CircuitState): CircuitState = {
-    val writer = new java.io.PrintWriter("/scratch/magyar/prefame.fir")
+    val td = state.annotations.collectFirst { case TargetDirAnnotation(value) => value }.get
+    val writer = new java.io.PrintWriter(new File(td, "prefame.fir"))
     val emitter = new HighFirrtlEmitter
     emitter.emit(state, writer)
     val c = state.circuit
@@ -161,7 +162,7 @@ class FAMETransform extends Transform {
       case m => m
     }
     val poststate = state.copy(circuit = c.copy(modules = transformedModules))
-    val postwriter = new java.io.PrintWriter("/scratch/magyar/postfame.fir")
+    val postwriter = new java.io.PrintWriter(new File(td, "postfame.fir"))
     val postemitter = new HighFirrtlEmitter
     postemitter.emit(poststate, postwriter)
     poststate
