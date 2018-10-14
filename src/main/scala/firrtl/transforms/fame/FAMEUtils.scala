@@ -14,8 +14,14 @@ trait Channel {
   def name: String
   def direction: Direction
   def ports: collection.Set[Port]
+  def removeCommonPrefix(a: String, b: String): (String, String) = (a, b) match {
+    case (a, b) if (a.length == 0 || b.length == 0) => (a, b)
+    case (a, b) if (a.charAt(0) == b.charAt(0)) => removeCommonPrefix(a.drop(1), b.drop(1))
+    case (a, b) => (a, b)
+  }
+
   def tpe: Type = {
-    val fields = ports.map(p => Field(p.name, Default, p.tpe))
+    val fields = ports.map(p => Field(removeCommonPrefix(p.name, name)._1, Default, p.tpe))
     if (fields.size > 1) {
       Decouple(new BundleType(fields.toSeq))
     } else {
@@ -30,7 +36,7 @@ trait Channel {
   def isFiring: Expression = Reduce.and(Seq(isReady, isValid))
   def replacePortRef(wr: WRef): WSubField = {
     if (ports.size > 1) {
-      WSubField(WSubField(WRef(asPort), "bits"), wr.name)
+      WSubField(WSubField(WRef(asPort), "bits"), removeCommonPrefix(wr.name, name)._1)
     } else {
       WSubField(WRef(asPort), "bits")
     }
