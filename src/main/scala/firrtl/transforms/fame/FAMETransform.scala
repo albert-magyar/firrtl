@@ -58,6 +58,8 @@ object PatientSSMTransformer {
     def onStmt(stmt: Statement): Statement = stmt.map(onStmt) match {
       case conn @ Connect(info, lhs, _) if (kind(lhs) == RegKind) =>
         Conditionally(info, WRef(finishing), conn, EmptyStmt)
+      case s: Stop  => s.copy(en = DoPrim(PrimOps.And, Seq(WRef(finishing), s.en), Seq.empty, BoolType))
+      case p: Print => p.copy(en = DoPrim(PrimOps.And, Seq(WRef(finishing), p.en), Seq.empty, BoolType))
       case mem: DefMemory => PatientMemTransformer(mem, WRef(finishing), WRef(hostClock), ns)
       case wi: WDefInstance if syncModules.contains(wi.module) => new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
       case s => s
@@ -124,6 +126,8 @@ object FAMEModuleTransformer {
         Conditionally(info, WRef(finishing), conn, EmptyStmt)
       case mem: DefMemory => PatientMemTransformer(mem, WRef(finishing), WRef(hostClock), ns)
       case wi: WDefInstance if syncModules.contains(wi.module) => new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
+      case s: Stop  => s.copy(en = DoPrim(PrimOps.And, Seq(WRef(finishing), s.en), Seq.empty, BoolType))
+      case p: Print => p.copy(en = DoPrim(PrimOps.And, Seq(WRef(finishing), p.en), Seq.empty, BoolType))
       case s => s
     }
 
