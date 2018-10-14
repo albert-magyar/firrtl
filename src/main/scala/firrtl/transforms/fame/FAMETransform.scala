@@ -153,6 +153,7 @@ class FAMETransform extends Transform {
     val writer = new java.io.PrintWriter(new File(td, "prefame.fir"))
     val emitter = new HighFirrtlEmitter
     emitter.emit(state, writer)
+    writer.close
     val c = state.circuit
     val anns = state.annotations.collect {
       case a @ FAMETransformAnnotation(ModuleName(name, _), _) => (name, a)
@@ -169,6 +170,7 @@ class FAMETransform extends Transform {
     val postwriter = new java.io.PrintWriter(new File(td, "postfame.fir"))
     val postemitter = new HighFirrtlEmitter
     postemitter.emit(poststate, postwriter)
+    postwriter.close
     poststate
   }
 }
