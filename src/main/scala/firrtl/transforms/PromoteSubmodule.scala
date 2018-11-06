@@ -6,15 +6,16 @@ package transforms
 import ir._
 import Utils._
 import Mappers._
-import annotations._
+import annotations.{CircuitTarget, InstanceTarget, Annotation, SingleTargetAnnotation}
 import analyses.InstanceGraph
 import graph.DiGraph
 import scala.collection.mutable
 import firrtl.passes.{InlineInstances,PassException}
 
 /** Tags an annotation to be consumed by this transform */
-case class PromoteSubmoduleAnnotation(target: Named) extends SingleTargetAnnotation[Named] {
-  def duplicate(n: Named) = PromoteSubmoduleAnnotation(n)
+case class PromoteSubmoduleAnnotation(target: InstanceTarget) extends SingleTargetAnnotation[InstanceTarget] {
+  def targets = Seq(target)
+  def duplicate(n: InstanceTarget) = this.copy(n)
 }
 
 /**
@@ -37,9 +38,14 @@ class PromoteSubmodule extends Transform {
   def outputForm = HighForm
 
   private def findPromotedInstances(iGraph: InstanceGraph, anns: Iterable[Annotation]): Set[WDefInstance] = {
-    val annotatedInstances = anns.map {
-      case PromoteSubmoduleAnnotation(ComponentName(com, mod)) => (mod.name, com)
-      case _ => throw new PassException("Annotation must be a PromoteSubmoduleAnnotation on a component!")
+    val annotatedInstances = anns.collect {
+      case PromoteSubmoduleAnnotation(instTarget) =>
+        /* For now, parent must be a module, not an instance.
+         * Otherwise, the parent (and possibly grandparent) would potentially
+         * need to be replicated into versions with and without the promoted child.
+         */
+        assert(instTarget.isLocal)
+        (instTarget.module, instTarget.instance)
     }
     val annotatedInstanceSet = annotatedInstances.toSet
     val instancesToPromote = iGraph.getChildrenInstances.flatMap {
@@ -69,13 +75,14 @@ class PromoteSubmodule extends Transform {
     parent.copy(ports = parent.ports :+ promotedPort, body = deleteSubStatement(parent.body, childInstance))
   }
 
-  private def transformParentInstances(stmt: Statement, parentTemplate: WDefInstance, childTemplate: WDefInstance, namespace: Namespace): Statement = stmt match {
+  private def transformParentInstances(stmt: Statement, parentTemplate: WDefInstance, childTemplate: WDefInstance, namespace: Namespace, promotedNames: mutable.ArrayBuffer[String]): Statement = stmt match {
     case oldParentInstance @ WDefInstance(_, _, parentTemplate.module, _) =>
       val retypedParentInst = oldParentInstance.copy(tpe = parentTemplate.tpe)
       val childPeerInst = childTemplate.copy(name = namespace.newName(oldParentInstance.name + "_" + childTemplate.name))
+      promotedNames += childPeerInst.name
       val connection = Connect(childTemplate.info, instanceField(retypedParentInst, childTemplate.name), instanceRef(childPeerInst))
       Block(Seq(retypedParentInst, childPeerInst, connection))
-    case Block(stmts) => Block(stmts map (s => transformParentInstances(s, parentTemplate, childTemplate, namespace)))
+  case Block(stmts) => Block(stmts map (s => transformParentInstances(s, parentTemplate, childTemplate, namespace, promotedNames)))
     case s => s
   }
 
@@ -83,27 +90,34 @@ class PromoteSubmodule extends Transform {
     val iGraph = new InstanceGraph(state.circuit)
     val updatedModules = new mutable.LinkedHashMap[String, Module]
     iGraph.moduleMap.foreach { case (k, v: Module) => updatedModules += (k -> v); case (k, v) => }
-    val reversed = iGraph.graph.reverse
-    val anns = state.annotations.collect { case a @ PromoteSubmoduleAnnotation(_) => a }
-    val promoted = findPromotedInstances(iGraph, anns)
-    val order = reversed.linearize.filter(reversed.getEdges(_).size > 0).filter(promoted)
+    val reversedIGraph = iGraph.graph.reverse
+    val promoted = findPromotedInstances(iGraph, state.annotations)
+    val order = reversedIGraph.linearize.filter(reversedIGraph.getEdges(_).size > 0).filter(promoted)
+    val renames = RenameMap()
     for (childInstance <- order) {
       val childModule = updatedModules(childInstance.module)
-      val parentInstances = reversed.getEdges(childInstance)
+      val parentInstances = reversedIGraph.getEdges(childInstance)
       val parentModule = updatedModules(parentInstances.head.module)
+      val originalTarget = CircuitTarget(state.circuit.main).module(parentModule.name).instOf(childInstance.name, childInstance.module)
       if (parentModule.name == state.circuit.main) {
         throw new PassException("Cannot promote child instance ${childInstance.name} from top module ${parentModule.name}")
       }
       updatedModules(parentModule.name) = instanceToPort(parentModule, childInstance, childModule)
-      val grandparentInstances = parentInstances.flatMap(reversed.getEdges(_))
+      val grandparentInstances = parentInstances.flatMap(reversedIGraph.getEdges(_))
       val grandparentModules = grandparentInstances.map(i => updatedModules(i.module)).toSet
       for (grandparent <- grandparentModules) {
         val parentTemplate = WDefInstance(NoInfo, "", parentModule.name, portBundle(parentModule))
         val namespace = Namespace(grandparent)
-        updatedModules(grandparent.name) = grandparent.copy(body = transformParentInstances(grandparent.body, parentTemplate, childInstance, namespace))
+        val promotedNames = new mutable.ArrayBuffer[String]
+        updatedModules(grandparent.name) = grandparent.copy(body = transformParentInstances(grandparent.body, parentTemplate, childInstance, namespace, promotedNames))
+        // Record renames
+        promotedNames.map(s => renames.record(originalTarget, originalTarget.copy(module = grandparent.name, instance = s)))
       }
     }
-    state.copy(circuit = state.circuit.copy(modules = updatedModules.map({ case (k, v) => v }).toSeq))
+    state.copy(
+      circuit = state.circuit.copy(modules = updatedModules.map({ case (k, v) => v }).toSeq),
+      renames = Some(renames),
+      annotations = state.annotations.filterNot(_.isInstanceOf[PromoteSubmoduleAnnotation])
+    )
   }
-
 }
