@@ -9,7 +9,7 @@ import ir._
 import Mappers._
 import Utils._
 import passes.MemPortUtils
-import annotations._
+import annotations.{ModuleTarget, InstanceTarget, Annotation, SingleTargetAnnotation}
 import scala.collection.mutable
 import mutable.{LinkedHashSet, LinkedHashMap}
 
@@ -156,7 +156,7 @@ class FAMETransform extends Transform {
     writer.close
     val c = state.circuit
     val anns = state.annotations.collect {
-      case a @ FAMETransformAnnotation(ModuleName(name, _), _) => (name, a)
+      case a @ FAMETransformAnnotation(ModuleTarget(_, name), _) => (name, a)
     }
     implicit val triggerName = "finishing" // TODO: pick a value that does not collide
     implicit val syncModules = c.modules.filter(_.ports.exists(_.tpe == ClockType)).map(_.name).toSet

@@ -5,7 +5,7 @@ package firrtl.transforms.fame
 import firrtl._
 import ir._
 import Utils._
-import annotations._
+import annotations.{Annotation, SingleTargetAnnotation, ModuleTarget}
 import graph.DiGraph
 import scala.collection
 import collection.mutable.{LinkedHashSet, LinkedHashMap}
@@ -112,17 +112,17 @@ object ChannelCCDependencyGraph {
 
 object FAMEAnnotate {
   def apply(c: Circuit, m: Module): FAMETransformAnnotation = {
-    FAMETransformAnnotation(ModuleName(m.name, CircuitName(c.main)), m.ports.filter(_.tpe != ClockType).map(p => (p.name, p.name)).toMap)
+    FAMETransformAnnotation(ModuleTarget(c.main, m.name), m.ports.filter(_.tpe != ClockType).map(p => (p.name, p.name)).toMap)
   }
 }
 
 // PortChannel key = port name, value = channel name
-case class FAMETransformAnnotation(target: Named, val portChannels: collection.Map[String, String]) extends SingleTargetAnnotation[Named] {
+case class FAMETransformAnnotation(target: ModuleTarget, val portChannels: collection.Map[String, String]) extends SingleTargetAnnotation[ModuleTarget] {
   def bindToModule(m: Module): FAMEPortMap = target match {
-    case ModuleName(m.name, _) => new FAMEPortMap(m, portChannels)
+    case ModuleTarget(_, m.name) => new FAMEPortMap(m, portChannels)
     case _ => Utils.throwInternalError(s"FAMETransformAnnotation does not match module $m.name")
   }
-  def duplicate(n: Named) = new FAMETransformAnnotation(n, portChannels)
+  def duplicate(n: ModuleTarget) = new FAMETransformAnnotation(n, portChannels)
 }
 
 class FAMEPortMap(m: Module, portChannels: collection.Map[String, String]) {

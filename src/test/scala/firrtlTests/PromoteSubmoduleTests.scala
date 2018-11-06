@@ -8,7 +8,7 @@ import org.scalatest.junit.JUnitRunner
 import firrtl.ir.Circuit
 import firrtl.Parser
 import firrtl.passes.PassExceptions
-import firrtl.annotations.{Annotation, CircuitName, ComponentName, ModuleName, Named}
+import firrtl.annotations.{Annotation, InstanceTarget}
 import firrtl.transforms.{PromoteSubmoduleAnnotation, PromoteSubmodule}
 import logger.{LogLevel, Logger}
 import logger.LogLevel.Debug
@@ -19,11 +19,8 @@ import logger.LogLevel.Debug
   */
 class PromoteSubmoduleTests extends HighTransformSpec {
   def transform = new PromoteSubmodule
-  def promote(mod: String): Annotation = {
-    val parts = mod.split('.')
-    val modName = ModuleName(parts.head, CircuitName("Top")) // If this fails, bad input
-    val name = if (parts.size == 1) modName else ComponentName(parts.tail.mkString("."), modName)
-    PromoteSubmoduleAnnotation(name)
+  def promote(mod: String, inst: String, ofMod: String): Annotation = {
+    PromoteSubmoduleAnnotation(InstanceTarget("Top", mod, Seq.empty, inst, ofMod))
   }
 
   "The instance c in Parent" should "be promoted" in {
@@ -65,7 +62,7 @@ class PromoteSubmoduleTests extends HighTransformSpec {
         |    input i : UInt<32>
         |    output o : UInt<32>
         |    o <= i""".stripMargin
-    execute(input, check, Seq(promote("Parent.c")))
+    execute(input, check, Seq(promote("Parent", "c", "Child")))
   }
 
   "The instances c1 and c2 in Parent" should "be promoted" in {
@@ -127,7 +124,7 @@ class PromoteSubmoduleTests extends HighTransformSpec {
         |    input i : UInt<32>
         |    output o : UInt<32>
         |    o <= i""".stripMargin
-    execute(input, check, Seq(promote("Parent.c1"), promote("Parent.c2")))
+    execute(input, check, Seq(promote("Parent", "c1", "Child"), promote("Parent", "c2", "child")))
   }
 
   "Each instance of c from multiple parent instances" should "be promoted" in {
@@ -182,6 +179,6 @@ class PromoteSubmoduleTests extends HighTransformSpec {
         |    input i : UInt<32>
         |    output o : UInt<32>
         |    o <= i""".stripMargin
-    execute(input, check, Seq(promote("Parent.c")))
+    execute(input, check, Seq(promote("Parent", "c", "Child")))
   }
 }
