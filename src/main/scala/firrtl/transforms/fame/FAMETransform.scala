@@ -20,6 +20,16 @@ import mutable.{LinkedHashSet, LinkedHashMap}
  2.) There are no collisions among input/output channel names
  */
 
+class ChannelMap(cs: CircuitState, m: Module) {
+  val portMap = m.ports.map(p => (p.name, p)).toMap
+  val inputPortsByChannel = cs.annotations.collect({
+    case FAMEChannelAnnotation(name, _, _, Some(ports)) if (m.name == ports.head.module) => (name, ports.map(p => portMap(p.ref)).toSet)
+  }).toMap
+  val outputPortsByChannel = cs.annotations.collect({
+    case FAMEChannelAnnotation(name, _, Some(ports), _) if (m.name == ports.head.module) => (name, ports.map(p => portMap(p.ref)).toSet)
+  }).toMap
+}
+
 object PatientMemTransformer {
   def apply(mem: DefMemory, finishing: WRef, memClock: WRef, ns: Namespace): Block = {
     val shim = DefWire(NoInfo, mem.name, MemPortUtils.memType(mem))
@@ -69,10 +79,9 @@ object PatientSSMTransformer {
 }
 
 object FAMEModuleTransformer {
-  def apply(c: Circuit, m: Module, ann: FAMETransformAnnotation)(implicit triggerName: String, syncModules: Set[String]): Module = {
+  def apply(c: Circuit, m: Module, channelMap: ChannelMap)(implicit triggerName: String, syncModules: Set[String]): Module = {
     // Step 0: Special signals & bookkeeping
     val ns = Namespace(m)
-    val portMap = ann.bindToModule(m)
     val clocks = m.ports.filter(_.tpe == ClockType)
     // TODO: turn this back to == 1
     assert(clocks.length >= 1)
@@ -84,12 +93,12 @@ object FAMEModuleTransformer {
     val finishing = DefWire(NoInfo, ns.newName(triggerName), Utils.BoolType)
 
     // Step 1: Build channels
-    val inChannels = portMap.getInputChannels(m).map {
+    val inChannels = channelMap.inputPortsByChannel.map {
       case (cName, pSet) => new InputChannel(cName, pSet)
     }
     val inChannelMap = new LinkedHashMap[String, InputChannel] ++
       (inChannels.flatMap(c => c.ports.map(p => (p.name, c))))
-    val outChannels = portMap.getOutputChannels(m).map {
+    val outChannels = channelMap.outputPortsByChannel.map {
       case (cName, pSet) =>
         val firedReg = createHostReg(name = ns.newName(s"${cName}_fired"))
         new OutputChannel(cName, pSet, firedReg)
@@ -155,14 +164,13 @@ class FAMETransform extends Transform {
     emitter.emit(state, writer)
     writer.close
     val c = state.circuit
-    val anns = state.annotations.collect {
-      case a @ FAMETransformAnnotation(ModuleTarget(_, name), _) => (name, a)
-    }
+    val fame1Modules = state.annotations.collect({
+      case a @ FAME1TransformAnnotation(ModuleTarget(_, name)) => name
+    }).toSet
     implicit val triggerName = "finishing" // TODO: pick a value that does not collide
     implicit val syncModules = c.modules.filter(_.ports.exists(_.tpe == ClockType)).map(_.name).toSet
-    val annMap = anns.toMap
     val transformedModules = c.modules.map {
-      case m @ Module(_, c.main, _, _) => if (annMap.contains(m.name)) FAMEModuleTransformer(c, m, annMap(m.name)) else FAMEModuleTransformer(c, m, FAMEAnnotate(c, m))
+      case m: Module if fame1Modules.contains(m.name) => FAMEModuleTransformer(c, m, new ChannelMap(state, m))
       case m: Module if syncModules.contains(m.name) => PatientSSMTransformer(m)
       case m => m
     }
