@@ -5,10 +5,42 @@ package firrtl.transforms.fame
 import firrtl._
 import ir._
 import Utils._
-import annotations.{Annotation, SingleTargetAnnotation, ModuleTarget}
+import annotations._
 import graph.DiGraph
 import scala.collection
 import collection.mutable.{LinkedHashSet, LinkedHashMap}
+
+abstract class FAMEChannelType
+
+case object WireChannel extends FAMEChannelType
+
+abstract class FAMEChannelAnnotation extends Annotation {
+  val channelType: FAMEChannelType
+  protected def updateRefTarget(renames: RenameMap)(rt: ReferenceTarget): ReferenceTarget = {
+    val renamed = renames.get(rt).toSeq.flatten
+    if (renamed.length != 1) throw AnnotationException(s"Error: FAME channel port ${rt.ref} cannot be duplicated!")
+    renamed.head match {
+      case rt: ReferenceTarget => rt
+      case _ => throw AnnotationException("Illegal Target type for FAMEChannelAnnotation!")
+    }
+   }
+}
+
+case class FAMESourceChannel(channelType: FAMEChannelType, ports: Seq[ReferenceTarget], sinks: Seq[ReferenceTarget]) extends FAMEChannelAnnotation {
+  def update(renames: RenameMap): Seq[Annotation] = {
+    val renamer = updateRefTarget(renames)(_)
+    Seq(this.copy(ports = ports.map(renamer), sinks = sinks.map(renamer)))
+  }
+  override def getTargets: Seq[ReferenceTarget] = ports ++ sinks
+}
+
+case class FAMESinkChannel(channelType: FAMEChannelType, ports: Seq[ReferenceTarget], sources: Seq[ReferenceTarget]) extends FAMEChannelAnnotation {
+  def update(renames: RenameMap): Seq[Annotation] = {
+    val renamer = updateRefTarget(renames)(_)
+    Seq(this.copy(ports = ports.map(renamer), sources = sources.map(renamer)))
+  }
+  override def getTargets: Seq[ReferenceTarget] = ports ++ sources
+}
 
 trait Channel {
   def name: String
