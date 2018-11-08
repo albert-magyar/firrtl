@@ -14,32 +14,32 @@ abstract class FAMEChannelType
 
 case object WireChannel extends FAMEChannelType
 
-abstract class FAMEChannelAnnotation extends Annotation {
-  val channelType: FAMEChannelType
-  protected def updateRefTarget(renames: RenameMap)(rt: ReferenceTarget): ReferenceTarget = {
-    val renamed = renames.get(rt).toSeq.flatten
-    if (renamed.length != 1) throw AnnotationException(s"Error: FAME channel port ${rt.ref} cannot be duplicated!")
-    renamed.head match {
-      case rt: ReferenceTarget => rt
-      case _ => throw AnnotationException("Illegal Target type for FAMEChannelAnnotation!")
-    }
-   }
+private[fame] class ReferenceTargetRenamer(renames: RenameMap) {
+  // TODO: determine order for multiple renames, or just check of == 1 rename?
+  def apply(rt: ReferenceTarget): Seq[ReferenceTarget] = {
+    renames.get(rt).toSeq.collect({ case rt: ReferenceTarget => rt })
+  }
 }
 
-case class FAMESourceChannel(channelType: FAMEChannelType, ports: Seq[ReferenceTarget], sinks: Seq[ReferenceTarget]) extends FAMEChannelAnnotation {
+case class FAMEChannelAnnotation(name: String, channelType: FAMEChannelType, sources: Option[Seq[ReferenceTarget]], sinks: Option[Seq[ReferenceTarget]]) extends Annotation {
   def update(renames: RenameMap): Seq[Annotation] = {
-    val renamer = updateRefTarget(renames)(_)
-    Seq(this.copy(ports = ports.map(renamer), sinks = sinks.map(renamer)))
+    val renamer = new ReferenceTargetRenamer(renames)(_)
+    Seq(this.copy(sources = sources.map(_ flatMap renamer), sinks = sinks.map(_ flatMap renamer)))
   }
-  override def getTargets: Seq[ReferenceTarget] = ports ++ sinks
+  override def getTargets: Seq[ReferenceTarget] = sources.toSeq.flatten ++ sinks.toSeq.flatten
 }
 
-case class FAMESinkChannel(channelType: FAMEChannelType, ports: Seq[ReferenceTarget], sources: Seq[ReferenceTarget]) extends FAMEChannelAnnotation {
+case class TransformedFAMEChannelAnnotation(name: String, channelType: FAMEChannelType, source: Option[ReferenceTarget], sink: Option[ReferenceTarget]) extends Annotation {
   def update(renames: RenameMap): Seq[Annotation] = {
-    val renamer = updateRefTarget(renames)(_)
-    Seq(this.copy(ports = ports.map(renamer), sources = sources.map(renamer)))
+    val renamer = new ReferenceTargetRenamer(renames)(_)
+    Seq(this.copy(source = source.flatMap(s => renamer(s).headOption), sink = sink.flatMap(s => renamer(s).headOption)))
   }
-  override def getTargets: Seq[ReferenceTarget] = ports ++ sources
+  override def getTargets: Seq[ReferenceTarget] = source.toSeq ++ sink.toSeq
+}
+
+case class FAME1TransformAnnotation(target: ModuleTarget) extends SingleTargetAnnotation[ModuleTarget] {
+  def targets = Seq(target)
+  def duplicate(n: ModuleTarget) = this.copy(n)
 }
 
 trait Channel {
@@ -142,39 +142,3 @@ object ChannelCCDependencyGraph {
   }
 }
 
-object FAMEAnnotate {
-  def apply(c: Circuit, m: Module): FAMETransformAnnotation = {
-    FAMETransformAnnotation(ModuleTarget(c.main, m.name), m.ports.filter(_.tpe != ClockType).map(p => (p.name, p.name)).toMap)
-  }
-}
-
-// PortChannel key = port name, value = channel name
-case class FAMETransformAnnotation(target: ModuleTarget, val portChannels: collection.Map[String, String]) extends SingleTargetAnnotation[ModuleTarget] {
-  def bindToModule(m: Module): FAMEPortMap = target match {
-    case ModuleTarget(_, m.name) => new FAMEPortMap(m, portChannels)
-    case _ => Utils.throwInternalError(s"FAMETransformAnnotation does not match module $m.name")
-  }
-  def duplicate(n: ModuleTarget) = new FAMETransformAnnotation(n, portChannels)
-}
-
-class FAMEPortMap(m: Module, portChannels: collection.Map[String, String]) {
-  val irPortChannels = m.ports.collect({ case p if portChannels.contains(p.name) => (p, portChannels(p.name)) })
-
-  def getInputChannels(m: Module): LinkedHashMap[String, LinkedHashSet[Port]] = {
-    val iChannelPorts = new LinkedHashMap[String, LinkedHashSet[Port]]
-    irPortChannels.collect({
-      case (port @ Port(_,_,Input,_), cName) =>
-        iChannelPorts.getOrElseUpdate(cName, new LinkedHashSet[Port]) += port
-    })
-    iChannelPorts
-  }
-
-  def getOutputChannels(m: Module): LinkedHashMap[String, LinkedHashSet[Port]] = {
-    val oChannelPorts = new LinkedHashMap[String, LinkedHashSet[Port]]
-    irPortChannels.collect({
-      case (port @ Port(_,_,Output,_), cName) =>
-        oChannelPorts.getOrElseUpdate(cName, new LinkedHashSet[Port]) += port
-    })
-    oChannelPorts
-  }
-}
