@@ -223,9 +223,9 @@ class FAMETransform extends Transform {
     // TODO: pick a value that does not collide
     implicit val triggerName = "finishing"
     val transformedModules = c.modules.map {
+      case m: Module if (m.name == c.main) => transformTop(m, analysis)
       case m: Module if (analysis.transformedModules.contains(ModuleTarget(c.main,m.name))) => FAMEModuleTransformer(m, analysis)
       case m: Module if (analysis.syncModules.contains(ModuleTarget(c.main, m.name))) => PatientSSMTransformer(m, analysis)
-      case m: Module if (m.name == c.main) => transformTop(m, analysis)
       case m => m
     }
     state.copy(circuit = c.copy(modules = transformedModules))
