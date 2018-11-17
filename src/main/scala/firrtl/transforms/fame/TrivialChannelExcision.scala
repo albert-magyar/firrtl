@@ -27,17 +27,13 @@ class TrivialChannelExcision extends Transform {
     val topChildren = new mutable.HashSet[WDefInstance]
     topModule.body.map(InstanceGraph.collectInstances(topChildren))
     assert(topChildren.size == 1)
-    val modelName = topChildren.head.module
-    val modelModule = state.circuit.modules.find(_.name == modelName).get
-    val fame1Anno = FAMETransformAnnotation(FAME1Transform, ModuleTarget(topName, modelName))
-    val fameChannelAnnos = modelModule.ports.collect({
+    val fame1Anno = FAMETransformAnnotation(FAME1Transform, ModuleTarget(topName, topChildren.head.module))
+    val fameChannelAnnos = topModule.ports.collect({
       case ip @ Port(_, name, Input, tpe) if tpe != ClockType =>
-        FAMEChannelAnnotation(name, WireChannel, None, Some(Seq(ReferenceTarget(topName, modelName, Nil, name, Nil))))
+        FAMEChannelAnnotation(s"channel_${name}_sink", WireChannel, None, Some(Seq(ReferenceTarget(topName, topName, Nil, name, Nil))))
       case op @ Port(_, name, Output, tpe) =>
-        FAMEChannelAnnotation(name, WireChannel, Some(Seq(ReferenceTarget(topName, modelName, Nil, name, Nil))), None)
+        FAMEChannelAnnotation(s"channel_${name}_source", WireChannel, Some(Seq(ReferenceTarget(topName, topName, Nil, name, Nil))), None)
     })
-    val newState = state.copy(annotations = state.annotations ++ Seq(fame1Anno) ++ fameChannelAnnos)
-    newState.annotations.foreach({ a => println(a) })
-    newState
+    state.copy(annotations = state.annotations ++ Seq(fame1Anno) ++ fameChannelAnnos)
   }
 }

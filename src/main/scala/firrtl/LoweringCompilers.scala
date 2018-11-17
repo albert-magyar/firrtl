@@ -194,6 +194,7 @@ class FAMECompiler extends Compiler {
       new HighFirrtlToMiddleFirrtl,
       new MiddleFirrtlToLowFirrtl,
       new fame.TrivialChannelExcision,
-      new fame.FAMETransform
+      new fame.FAMETransform,
+      new ResolveAndCheck
     )
 }
