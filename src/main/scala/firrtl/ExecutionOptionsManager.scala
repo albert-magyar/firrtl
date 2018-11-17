@@ -211,6 +211,7 @@ extends ComposableOptions {
       case "verilog"   => new VerilogCompiler()
       case "sverilog"  => new SystemVerilogCompiler()
       case "uclid"     => new UclidCompiler()
+      case "fame"      => new FAMECompiler()
     }
   }
 
@@ -222,6 +223,7 @@ extends ComposableOptions {
       case "low"       => "lo.fir"
       case "high"      => "hi.fir"
       case "middle"    => "mid.fir"
+      case "fame"      => "hi.fir"
       case _ =>
         throw new Exception(s"Illegal compiler name $compilerName")
     }
@@ -271,6 +273,7 @@ extends ComposableOptions {
       case "verilog" => classOf[VerilogEmitter]
       case "sverilog" => classOf[VerilogEmitter]
       case "uclid" => classOf[UclidEmitter]
+      case "fame" => classOf[HighFirrtlEmitter]
     }
     getOutputConfig(optionsManager) match {
       case SingleFile(_) => Seq(EmitCircuitAnnotation(emitter))
@@ -352,7 +355,7 @@ trait HasFirrtlOptions {
       firrtlOptions = firrtlOptions.copy(compilerName = x)
     }
     .validate { x =>
-      if (Array("high", "middle", "low", "verilog", "sverilog", "uclid").contains(x.toLowerCase)) parser.success
+      if (Array("high", "middle", "low", "verilog", "sverilog", "uclid", "fame").contains(x.toLowerCase)) parser.success
       else parser.failure(s"$x not a legal compiler")
     }.text {
       s"compiler to use, default is ${firrtlOptions.compilerName}"

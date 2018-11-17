@@ -487,7 +487,7 @@ case object UnknownType extends Type {
 }
 
 /** [[Port]] Direction */
-abstract class Direction extends FirrtlNode
+sealed abstract class Direction extends FirrtlNode
 case object Input extends Direction {
   def serialize: String = "input"
 }

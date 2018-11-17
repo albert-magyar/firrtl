@@ -20,14 +20,55 @@ import mutable.{LinkedHashSet, LinkedHashMap}
  2.) There are no collisions among input/output channel names
  */
 
-class ChannelMap(cs: CircuitState, m: Module) {
-  val portMap = m.ports.map(p => (p.name, p)).toMap
-  val inputPortsByChannel = cs.annotations.collect({
-    case FAMEChannelAnnotation(name, _, _, Some(ports)) if (m.name == ports.head.module) => (name, ports.map(p => portMap(p.ref)).toSet)
-  }).toMap
-  val outputPortsByChannel = cs.annotations.collect({
-    case FAMEChannelAnnotation(name, _, Some(ports), _) if (m.name == ports.head.module) => (name, ports.map(p => portMap(p.ref)).toSet)
-  }).toMap
+trait FAME1Channel {
+  def name: String
+  def direction: Direction
+  def ports: Seq[Port]
+  def tpe: Type = FAMEChannelAnalysis.getChannelType(name, ports)
+  def asPort: Port = Port(NoInfo, name, direction, tpe)
+  def isReady: Expression = WSubField(WRef(asPort), "ready", Utils.BoolType)
+  def isValid: Expression = WSubField(WRef(asPort), "valid", Utils.BoolType)
+  def isFiring: Expression = Reduce.and(Seq(isReady, isValid))
+  def replacePortRef(wr: WRef): WSubField = {
+    if (ports.size > 1) {
+      WSubField(WSubField(WRef(asPort), "bits"), FAMEChannelAnalysis.removeCommonPrefix(wr.name, name)._1)
+    } else {
+      WSubField(WRef(asPort), "bits")
+    }
+  }
+}
+
+case class FAME1InputChannel(val name: String, val ports: Seq[Port]) extends FAME1Channel {
+  val direction = Input
+  def genTokenLogic(finishing: WRef): Seq[Statement] = {
+    Seq(Connect(NoInfo, isReady, finishing))
+  }
+}
+
+case class FAME1OutputChannel(val name: String, val ports: Seq[Port], val firedReg: DefRegister) extends FAME1Channel {
+  val direction = Output
+  val isFired = WRef(firedReg)
+  val isFiredOrFiring = Reduce.or(Seq(isFired, isFiring))
+  def genTokenLogic(finishing: WRef, ccDeps: Iterable[FAME1InputChannel]): Seq[Statement] = {
+    val regUpdate = Connect(
+      NoInfo,
+      isFired,
+      Mux(finishing,
+        UIntLiteral(0, IntWidth(1)),
+        isFiredOrFiring,
+        Utils.BoolType))
+    val setValid = Connect(
+      NoInfo,
+      isValid,
+      Reduce.and(ccDeps.map(_.isValid) ++ Seq(Negate(isFired))))
+    Seq(regUpdate, setValid)
+  }
+}
+
+object ChannelCCDependencyGraph {
+  def apply(m: Module): LinkedHashMap[FAME1OutputChannel, LinkedHashSet[FAME1InputChannel]] = {
+    new LinkedHashMap[FAME1OutputChannel, LinkedHashSet[FAME1InputChannel]]
+  }
 }
 
 object PatientMemTransformer {
@@ -58,7 +99,7 @@ object PatientMemTransformer {
 }
 
 object PatientSSMTransformer {
-  def apply(m: Module)(implicit triggerName: String, syncModules: Set[String]): Module = {
+  def apply(m: Module, analysis: FAMEChannelAnalysis)(implicit triggerName: String): Module = {
     val ns = Namespace(m)
     val clocks = m.ports.filter(_.tpe == ClockType)
     // TODO: turn this back on
@@ -71,7 +112,8 @@ object PatientSSMTransformer {
       case s: Stop  => s.copy(en = DoPrim(PrimOps.And, Seq(WRef(finishing), s.en), Seq.empty, BoolType))
       case p: Print => p.copy(en = DoPrim(PrimOps.And, Seq(WRef(finishing), p.en), Seq.empty, BoolType))
       case mem: DefMemory => PatientMemTransformer(mem, WRef(finishing), WRef(hostClock), ns)
-      case wi: WDefInstance if syncModules.contains(wi.module) => new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
+      case wi: WDefInstance if analysis.syncModules.contains(ModuleTarget(analysis.circuit.main, wi.module)) =>
+        new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
       case s => s
     }
     Module(m.info, m.name, m.ports :+ finishing, m.body.map(onStmt))
@@ -79,7 +121,7 @@ object PatientSSMTransformer {
 }
 
 object FAMEModuleTransformer {
-  def apply(c: Circuit, m: Module, channelMap: ChannelMap)(implicit triggerName: String, syncModules: Set[String]): Module = {
+  def apply(m: Module, analysis: FAMEChannelAnalysis)(implicit triggerName: String): Module = {
     // Step 0: Special signals & bookkeeping
     val ns = Namespace(m)
     val clocks = m.ports.filter(_.tpe == ClockType)
@@ -93,27 +135,27 @@ object FAMEModuleTransformer {
     val finishing = DefWire(NoInfo, ns.newName(triggerName), Utils.BoolType)
 
     // Step 1: Build channels
-    val inChannels = channelMap.inputPortsByChannel.map {
-      case (cName, pSet) => new InputChannel(cName, pSet)
-    }
-    val inChannelMap = new LinkedHashMap[String, InputChannel] ++
+    val inChannels = analysis.inputPortsByChannel(m).map({
+      case (cName, ports) => new FAME1InputChannel(cName, ports)
+    })
+    val inChannelMap = new LinkedHashMap[String, FAME1InputChannel] ++
       (inChannels.flatMap(c => c.ports.map(p => (p.name, c))))
-    val outChannels = channelMap.outputPortsByChannel.map {
-      case (cName, pSet) =>
+    val outChannels = analysis.outputPortsByChannel(m).map({
+      case (cName, ports) =>
         val firedReg = createHostReg(name = ns.newName(s"${cName}_fired"))
-        new OutputChannel(cName, pSet, firedReg)
-    }
-    val outChannelMap = new LinkedHashMap[String, OutputChannel] ++
+        new FAME1OutputChannel(cName, ports, firedReg)
+    })
+    val outChannelMap = new LinkedHashMap[String, FAME1OutputChannel] ++
       (outChannels.flatMap(c => c.ports.map(p => (p.name, c))))
     val decls = Seq(finishing) ++ outChannels.map(_.firedReg)
 
 
     // Step 2: Find combinational dependencies
     val ccChecker = new transforms.CheckCombLoops
-    val portDeps = ccChecker.analyzeModule(c, m)
-    val ccDeps = new LinkedHashMap[OutputChannel, LinkedHashSet[InputChannel]]
+    val portDeps = ccChecker.analyzeModule(analysis.circuit, m)
+    val ccDeps = new LinkedHashMap[FAME1OutputChannel, LinkedHashSet[FAME1InputChannel]]
     portDeps.getEdgeMap.collect({ case (o, iSet) if outChannelMap.contains(o) =>
-      ccDeps.getOrElseUpdate(outChannelMap(o), new LinkedHashSet[InputChannel])
+      ccDeps.getOrElseUpdate(outChannelMap(o), new LinkedHashSet[FAME1InputChannel])
       iSet.foreach(i => ccDeps(outChannelMap(o)) += inChannelMap(i) )})
 
     // Step 3: transform ports
@@ -134,7 +176,8 @@ object FAMEModuleTransformer {
       case conn @ Connect(info, lhs, _) if (kind(lhs) == RegKind) =>
         Conditionally(info, WRef(finishing), conn, EmptyStmt)
       case mem: DefMemory => PatientMemTransformer(mem, WRef(finishing), WRef(hostClock), ns)
-      case wi: WDefInstance if syncModules.contains(wi.module) => new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
+      case wi: WDefInstance if analysis.syncModules.contains(analysis.topTarget.copy(module = wi.module)) =>
+        new Block(Seq(wi, Connect(wi.info, WSubField(WRef(wi), triggerName), WRef(finishing))))
       case s: Stop  => s.copy(en = DoPrim(PrimOps.And, Seq(WRef(finishing), s.en), Seq.empty, BoolType))
       case p: Print => p.copy(en = DoPrim(PrimOps.And, Seq(WRef(finishing), p.en), Seq.empty, BoolType))
       case s => s
@@ -157,28 +200,34 @@ class FAMETransform extends Transform {
   def inputForm = LowForm
   def outputForm = HighForm
 
+  def deleteStaleConnects(analysis: FAMEChannelAnalysis)(stmt: Statement): Statement = stmt.map(deleteStaleConnects(analysis)) match {
+    case Connect(_, WRef(name, _, _, _), _) if (analysis.staleTopPorts.contains(analysis.topTarget.ref(name))) => EmptyStmt
+    case Connect(_, _, WRef(name, _, _, _)) if (analysis.staleTopPorts.contains(analysis.topTarget.ref(name))) => EmptyStmt
+    case s => s
+  }
+
+  def transformTop(top: DefModule, analysis: FAMEChannelAnalysis): Module = top match {
+    case Module(info, name, ports, body) =>
+      val transformedPorts = ports.filterNot(p => analysis.staleTopPorts.contains(analysis.topTarget.ref(p.name))) ++
+        analysis.transformedSinks.map(c => Port(NoInfo, c, Input, analysis.getSinkChannelType(c))) ++
+        analysis.transformedSources.map(c => Port(NoInfo, c, Output, analysis.getSourceChannelType(c)))
+      val transformedStmts = Seq(body.map(deleteStaleConnects(analysis))) ++
+        analysis.transformedSinks.map({c => Connect(NoInfo, WSubField(WRef(analysis.sinkModel(c).module), c), WRef(c))}) ++
+        analysis.transformedSources.map({c => Connect(NoInfo, WRef(c), WSubField(WRef(analysis.sourceModel(c).module), c))})
+      Module(info, name, transformedPorts, Block(transformedStmts))
+  }
+
   override def execute(state: CircuitState): CircuitState = {
-    val td = state.annotations.collectFirst { case TargetDirAnnotation(value) => value }.get
-    val writer = new java.io.PrintWriter(new File(td, "prefame.fir"))
-    val emitter = new HighFirrtlEmitter
-    emitter.emit(state, writer)
-    writer.close
     val c = state.circuit
-    val fame1Modules = state.annotations.collect({
-      case a @ FAME1TransformAnnotation(ModuleTarget(_, name)) => name
-    }).toSet
-    implicit val triggerName = "finishing" // TODO: pick a value that does not collide
-    implicit val syncModules = c.modules.filter(_.ports.exists(_.tpe == ClockType)).map(_.name).toSet
+    val analysis = new FAMEChannelAnalysis(state, FAME1Transform)
+    // TODO: pick a value that does not collide
+    implicit val triggerName = "finishing"
     val transformedModules = c.modules.map {
-      case m: Module if fame1Modules.contains(m.name) => FAMEModuleTransformer(c, m, new ChannelMap(state, m))
-      case m: Module if syncModules.contains(m.name) => PatientSSMTransformer(m)
+      case m: Module if (analysis.transformedModules.contains(ModuleTarget(c.main,m.name))) => FAMEModuleTransformer(m, analysis)
+      case m: Module if (analysis.syncModules.contains(ModuleTarget(c.main, m.name))) => PatientSSMTransformer(m, analysis)
+      case m: Module if (m.name == c.main) => transformTop(m, analysis)
       case m => m
     }
-    val poststate = state.copy(circuit = c.copy(modules = transformedModules))
-    val postwriter = new java.io.PrintWriter(new File(td, "postfame.fir"))
-    val postemitter = new HighFirrtlEmitter
-    postemitter.emit(poststate, postwriter)
-    postwriter.close
-    poststate
+    state.copy(circuit = c.copy(modules = transformedModules))
   }
 }
