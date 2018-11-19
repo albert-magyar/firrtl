@@ -15,12 +15,14 @@ class WrapTop extends Transform {
     val topName = state.circuit.main
     val topModule = state.circuit.modules.find(_.name == topName).get
     val topInstance = WDefInstance(topName, topName)
-    val topWrapperName = Namespace(state.circuit).newName("FAMETop")
+    val ns = Namespace(state.circuit)
+    val topWrapperName = ns.newName("FAMETop")
     val portConnections = topModule.ports.map({
       case ip @ Port(_, name, Input, _) => Connect(NoInfo, WSubField(WRef(topInstance), name), WRef(ip))
       case op @ Port(_, name, Output, _) => Connect(NoInfo, WRef(op), WSubField(WRef(topInstance), name))
     })
-    val topWrapper = Module(NoInfo, topWrapperName, topModule.ports, Block(topInstance +: portConnections))
+    val topPorts = topModule.ports ++ Seq(HostReset.makePort(ns))
+    val topWrapper = Module(NoInfo, topWrapperName, topPorts, Block(topInstance +: portConnections))
     val renames = RenameMap()
     val newCircuit = Circuit(state.circuit.info, topWrapper +: state.circuit.modules, topWrapperName)
     renames.record(CircuitTarget(topName), CircuitTarget(topWrapperName))
