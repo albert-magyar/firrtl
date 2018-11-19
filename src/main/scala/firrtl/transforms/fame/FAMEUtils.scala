@@ -54,6 +54,11 @@ private[fame] object FAMEChannelAnalysis {
 
 }
 
+private [fame] object HostReset {
+  def makePort(ns: Namespace): Port =
+    new Port(NoInfo, ns.newName("hostReset"), Input, Utils.BoolType)
+}
+
 private[fame] class FAMEChannelAnalysis(val state: CircuitState, val fameType: FAMETransformType) {
   // TODO: only transform submodules of model modules
   // TODO: add renames!

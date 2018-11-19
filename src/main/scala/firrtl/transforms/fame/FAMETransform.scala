@@ -128,7 +128,7 @@ object FAMEModuleTransformer {
     // TODO: turn this back to == 1
     assert(clocks.length >= 1)
     val hostClock = clocks.find(_.name == "clock").getOrElse(clocks.head) // TODO: naming convention for host clock
-    val hostReset = new Port(NoInfo, ns.newName("hostReset"), Input, Utils.BoolType)
+    val hostReset = HostReset.makePort(ns)
     def createHostReg(name: String = "host", width: Width = IntWidth(1)): DefRegister = {
       new DefRegister(NoInfo, ns.newName(name), UIntType(width), WRef(hostClock), WRef(hostReset), UIntLiteral(0, width))
     }
@@ -213,7 +213,9 @@ class FAMETransform extends Transform {
         analysis.transformedSources.map(c => Port(NoInfo, c, Output, analysis.getSourceChannelType(c)))
       val transformedStmts = Seq(body.map(deleteStaleConnects(analysis))) ++
         analysis.transformedSinks.map({c => Connect(NoInfo, WSubField(WRef(analysis.sinkModel(c).module), c), WRef(c))}) ++
-        analysis.transformedSources.map({c => Connect(NoInfo, WRef(c), WSubField(WRef(analysis.sourceModel(c).module), c))})
+        analysis.transformedSources.map({c => Connect(NoInfo, WRef(c), WSubField(WRef(analysis.sourceModel(c).module), c))}) ++
+        analysis.transformedModules.map({m => Connect(NoInfo, WSubField(WRef(m.module), "hostReset"),
+          WRef(top.ports.find(_.name == "hostReset").get))})
       Module(info, name, transformedPorts, Block(transformedStmts))
   }
 
