@@ -12,12 +12,40 @@ import scala.collection
 import collection.mutable
 import collection.mutable.{LinkedHashSet, LinkedHashMap, MultiMap}
 
-abstract class FAMEChannelType
-case object WireChannel extends FAMEChannelType
-case class FAMEChannelAnnotation(name: String, channelType: FAMEChannelType, sources: Option[Seq[ReferenceTarget]], sinks: Option[Seq[ReferenceTarget]]) extends Annotation {
+abstract class FAMEChannelInfo {
+  def update(renames: RenameMap): FAMEChannelInfo = this
+}
+
+case object WireChannel extends FAMEChannelInfo
+case object DecoupledReverseChannel extends FAMEChannelInfo
+
+/*
+ * These reference targets point to the associated ready/valid ports
+ * readySink: sink port component of the corresponding reverse channel
+ * validSource: valid port component from this channel's sources
+ * readySource: source port component of the corresponding reverse channel
+ * validSink: valid port component from this channel's sinks
+ * (readySink, validSource) are on one model, (readySource, validSink) on the other
+ */
+case class DecoupledForwardChannel(
+  readySink: Option[ReferenceTarget],
+  validSource: Option[ReferenceTarget],
+  readySource: Option[ReferenceTarget],
+  validSink: Option[ReferenceTarget]) extends FAMEChannelInfo {
+  override def update(renames: RenameMap): DecoupledForwardChannel = {
+    val renamer = new ReferenceTargetRenamer(renames)
+    DecoupledForwardChannel(
+      readySink.map(renamer.exactRename(_)),
+      validSource.map(renamer.exactRename(_)),
+      readySource.map(renamer.exactRename(_)),
+      validSink.map(renamer.exactRename(_)))
+  }
+}
+
+case class FAMEChannelAnnotation(name: String, channelInfo: FAMEChannelInfo, sources: Option[Seq[ReferenceTarget]], sinks: Option[Seq[ReferenceTarget]]) extends Annotation {
   def update(renames: RenameMap): Seq[Annotation] = {
-    val renamer = new ReferenceTargetRenamer(renames)(_)
-    Seq(this.copy(sources = sources.map(_ flatMap renamer), sinks = sinks.map(_ flatMap renamer)))
+    val renamer = new ReferenceTargetRenamer(renames)
+    Seq(this.copy(channelInfo = channelInfo.update(renames), sources = sources.map(s => s.map(renamer.exactRename(_))), sinks = sinks.map(s => s.map(renamer.exactRename(_)))))
   }
   override def getTargets: Seq[ReferenceTarget] = sources.toSeq.flatten ++ sinks.toSeq.flatten
 }
@@ -31,6 +59,11 @@ case class FAMETransformAnnotation(transformType: FAMETransformType, target: Mod
 
 private[fame] class ReferenceTargetRenamer(renames: RenameMap) {
   // TODO: determine order for multiple renames, or just check of == 1 rename?
+  def exactRename(rt: ReferenceTarget): ReferenceTarget = {
+    val renameMatches = renames.get(rt).getOrElse(Seq(rt)).collect({ case rt: ReferenceTarget => rt })
+    assert(renameMatches.length == 1)
+    renameMatches.head
+  }
   def apply(rt: ReferenceTarget): Seq[ReferenceTarget] = {
     renames.get(rt).getOrElse(Seq(rt)).collect({ case rt: ReferenceTarget => rt })
   }
