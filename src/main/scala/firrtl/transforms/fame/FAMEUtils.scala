@@ -57,6 +57,20 @@ case class FAMETransformAnnotation(transformType: FAMETransformType, target: Mod
   def duplicate(n: ModuleTarget) = this.copy(transformType, n)
 }
 
+abstract class FAMEGlobalSignal extends SingleTargetAnnotation[ReferenceTarget] {
+  val target: ReferenceTarget
+  def targets = Seq(target)
+  def duplicate(n: ReferenceTarget): FAMEGlobalSignal
+}
+
+case class FAMEHostClock(target: ReferenceTarget) extends FAMEGlobalSignal {
+  def duplicate(t: ReferenceTarget): FAMEHostClock = this.copy(t)
+}
+
+case class FAMEHostReset(target: ReferenceTarget) extends FAMEGlobalSignal {
+  def duplicate(t: ReferenceTarget): FAMEHostReset = this.copy(t)
+}
+
 private[fame] class ReferenceTargetRenamer(renames: RenameMap) {
   // TODO: determine order for multiple renames, or just check of == 1 rename?
   def exactRename(rt: ReferenceTarget): ReferenceTarget = {
@@ -175,6 +189,8 @@ private[fame] class FAMEChannelAnalysis(val state: CircuitState, val fameType: F
         staleTopPorts ++= sources
       })
   })
+
+  val hostReset = state.annotations.collect({ case FAMEHostReset(rt) => rt }).head
 
   def inputPortsByChannel(m: DefModule): Map[String, Seq[Port]] = {
     val iChannels = inputChannels.get(ModuleTarget(circuit.main, m.name)).toSet.flatten
