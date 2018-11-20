@@ -214,8 +214,7 @@ class FAMETransform extends Transform {
       val transformedStmts = Seq(body.map(deleteStaleConnects(analysis))) ++
         analysis.transformedSinks.map({c => Connect(NoInfo, WSubField(WRef(analysis.sinkModel(c).module), c), WRef(c))}) ++
         analysis.transformedSources.map({c => Connect(NoInfo, WRef(c), WSubField(WRef(analysis.sourceModel(c).module), c))}) ++
-        analysis.transformedModules.map({m => Connect(NoInfo, WSubField(WRef(m.module), "hostReset"),
-          WRef(top.ports.find(_.name == "hostReset").get))})
+        analysis.transformedModules.map({m => Connect(NoInfo, WSubField(WRef(m.module), "hostReset"), WRef(analysis.hostReset.ref, Utils.BoolType)) })
       Module(info, name, transformedPorts, Block(transformedStmts))
   }
 

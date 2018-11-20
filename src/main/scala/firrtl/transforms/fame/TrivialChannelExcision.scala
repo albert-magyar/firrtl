@@ -27,9 +27,13 @@ class TrivialChannelExcision extends Transform {
     val topChildren = new mutable.HashSet[WDefInstance]
     topModule.body.map(InstanceGraph.collectInstances(topChildren))
     assert(topChildren.size == 1)
+    val specialSignals = state.annotations.collect({
+      case FAMEHostClock(rt) => rt.ref
+      case FAMEHostReset(rt) => rt.ref
+    }).toSet
     val fame1Anno = FAMETransformAnnotation(FAME1Transform, ModuleTarget(topName, topChildren.head.module))
     val fameChannelAnnos = topModule.ports.collect({
-      case ip @ Port(_, name, Input, tpe) if tpe != ClockType =>
+      case ip @ Port(_, name, Input, tpe) if !specialSignals.contains(name) =>
         FAMEChannelAnnotation(s"channel_${name}_sink", WireChannel, None, Some(Seq(ReferenceTarget(topName, topName, Nil, name, Nil))))
       case op @ Port(_, name, Output, tpe) =>
         FAMEChannelAnnotation(s"channel_${name}_source", WireChannel, Some(Seq(ReferenceTarget(topName, topName, Nil, name, Nil))), None)
