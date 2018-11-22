@@ -30,7 +30,13 @@ class WrapTop extends Transform {
     val specialPortAnnotations = Seq(FAMEHostClock(topWrapperTarget.ref(hostClock.name)), FAMEHostReset(topWrapperTarget.ref(hostReset.name)))
     val renames = RenameMap()
     val newCircuit = Circuit(state.circuit.info, topWrapper +: state.circuit.modules, topWrapperName)
+    // Make channel annotations point at top-level ports
+    val updatedAnnotations = state.annotations.map({
+      case fca: FAMEChannelAnnotation =>
+        fca.copy(sinks = fca.sinks.map(_.map(_.copy(module = topWrapperName))), sources = fca.sources.map(_.map(_.copy(module = topWrapperName))))
+      case a => a
+    })
     renames.record(CircuitTarget(topName), topWrapperTarget.targetParent)
-    state.copy(circuit = newCircuit, annotations = state.annotations ++ specialPortAnnotations, renames = Some(renames))
+    state.copy(circuit = newCircuit, annotations = updatedAnnotations ++ specialPortAnnotations, renames = Some(renames))
   }
 }
