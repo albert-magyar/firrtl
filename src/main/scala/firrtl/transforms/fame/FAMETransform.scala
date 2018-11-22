@@ -9,7 +9,7 @@ import ir._
 import Mappers._
 import Utils._
 import passes.MemPortUtils
-import annotations.{ModuleTarget, InstanceTarget, Annotation, SingleTargetAnnotation}
+import annotations._
 import scala.collection.mutable
 import mutable.{LinkedHashSet, LinkedHashMap}
 
@@ -24,8 +24,8 @@ trait FAME1Channel {
   def name: String
   def direction: Direction
   def ports: Seq[Port]
-  def tpe: Type = FAMEChannelAnalysis.getChannelType(name, ports)
-  def asPort: Port = Port(NoInfo, name, direction, tpe)
+  def tpe: Type = FAMEChannelAnalysis.getHostDecoupledChannelType(name, ports)
+  def asPort: Port
   def isReady: Expression = WSubField(WRef(asPort), "ready", Utils.BoolType)
   def isValid: Expression = WSubField(WRef(asPort), "valid", Utils.BoolType)
   def isFiring: Expression = Reduce.and(Seq(isReady, isValid))
@@ -40,6 +40,7 @@ trait FAME1Channel {
 
 case class FAME1InputChannel(val name: String, val ports: Seq[Port]) extends FAME1Channel {
   val direction = Input
+  def asPort: Port = Port(NoInfo, s"${name}_sink", Input, tpe)
   def genTokenLogic(finishing: WRef): Seq[Statement] = {
     Seq(Connect(NoInfo, isReady, finishing))
   }
@@ -49,6 +50,7 @@ case class FAME1OutputChannel(val name: String, val ports: Seq[Port], val firedR
   val direction = Output
   val isFired = WRef(firedReg)
   val isFiredOrFiring = Reduce.or(Seq(isFired, isFiring))
+  def asPort: Port = Port(NoInfo, s"${name}_source", Output, tpe)
   def genTokenLogic(finishing: WRef, ccDeps: Iterable[FAME1InputChannel]): Seq[Statement] = {
     val regUpdate = Connect(
       NoInfo,
@@ -151,7 +153,7 @@ object FAMEModuleTransformer {
 
 
     // Step 2: Find combinational dependencies
-    val ccChecker = new transforms.CheckCombLoops
+    val ccChecker = new firrtl.transforms.CheckCombLoops
     val portDeps = ccChecker.analyzeModule(analysis.circuit, m)
     val ccDeps = new LinkedHashMap[FAME1OutputChannel, LinkedHashSet[FAME1InputChannel]]
     portDeps.getEdgeMap.collect({ case (o, iSet) if outChannelMap.contains(o) =>
@@ -206,14 +208,32 @@ class FAMETransform extends Transform {
     case s => s
   }
 
+  def hostDecouplingRenames(analysis: FAMEChannelAnalysis): RenameMap = {
+    val renames = RenameMap()
+    val sinkRenames = analysis.transformedSinks.flatMap({c =>
+      if (analysis.sinkPorts(c).size == 1)
+        analysis.sinkPorts(c).map(rt => (rt, rt.copy(ref = s"${c}_sink").field("bits")))
+      else
+        analysis.sinkPorts(c).map(rt => (rt, rt.copy(ref = s"${c}_sink").field("bits").field(FAMEChannelAnalysis.removeCommonPrefix(rt.ref, c)._1)))
+    })
+    val sourceRenames = analysis.transformedSources.flatMap({c =>
+      if (analysis.sourcePorts(c).size == 1)
+        analysis.sourcePorts(c).map(rt => (rt, rt.copy(ref = s"${c}_source").field("bits")))
+      else
+        analysis.sourcePorts(c).map(rt => (rt, rt.copy(ref = s"${c}_source").field("bits").field(FAMEChannelAnalysis.removeCommonPrefix(rt.ref, c)._1)))
+    })
+    (sinkRenames ++ sourceRenames).foreach({ case (old, decoupled) => renames.record(old, decoupled) })
+    renames
+  }
+
   def transformTop(top: DefModule, analysis: FAMEChannelAnalysis): Module = top match {
     case Module(info, name, ports, body) =>
       val transformedPorts = ports.filterNot(p => analysis.staleTopPorts.contains(analysis.topTarget.ref(p.name))) ++
-        analysis.transformedSinks.map(c => Port(NoInfo, c, Input, analysis.getSinkChannelType(c))) ++
-        analysis.transformedSources.map(c => Port(NoInfo, c, Output, analysis.getSourceChannelType(c)))
+        analysis.transformedSinks.map(c => Port(NoInfo, s"${c}_sink", Input, analysis.getSinkHostDecoupledChannelType(c))) ++
+        analysis.transformedSources.map(c => Port(NoInfo, s"${c}_source", Output, analysis.getSourceHostDecoupledChannelType(c)))
       val transformedStmts = Seq(body.map(deleteStaleConnects(analysis))) ++
-        analysis.transformedSinks.map({c => Connect(NoInfo, WSubField(WRef(analysis.sinkModel(c).module), c), WRef(c))}) ++
-        analysis.transformedSources.map({c => Connect(NoInfo, WRef(c), WSubField(WRef(analysis.sourceModel(c).module), c))}) ++
+        analysis.transformedSinks.map({c => Connect(NoInfo, WSubField(WRef(analysis.sinkModel(c).module), s"${c}_sink"), WRef(s"${c}_sink"))}) ++
+        analysis.transformedSources.map({c => Connect(NoInfo, WRef(s"${c}_source"), WSubField(WRef(analysis.sourceModel(c).module), s"${c}_source"))}) ++
         analysis.transformedModules.map({m => Connect(NoInfo, WSubField(WRef(m.module), "hostReset"), WRef(analysis.hostReset.ref, Utils.BoolType)) })
       Module(info, name, transformedPorts, Block(transformedStmts))
   }
@@ -229,6 +249,6 @@ class FAMETransform extends Transform {
       case m: Module if (analysis.syncModules.contains(ModuleTarget(c.main, m.name))) => PatientSSMTransformer(m, analysis)
       case m => m
     }
-    state.copy(circuit = c.copy(modules = transformedModules))
+    state.copy(circuit = c.copy(modules = transformedModules), renames = Some(hostDecouplingRenames(analysis)))
   }
 }

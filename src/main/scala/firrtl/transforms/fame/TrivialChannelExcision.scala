@@ -34,9 +34,9 @@ class TrivialChannelExcision extends Transform {
     val fame1Anno = FAMETransformAnnotation(FAME1Transform, ModuleTarget(topName, topChildren.head.module))
     val fameChannelAnnos = topModule.ports.collect({
       case ip @ Port(_, name, Input, tpe) if !specialSignals.contains(name) =>
-        FAMEChannelAnnotation(s"channel_${name}_sink", WireChannel, None, Some(Seq(ReferenceTarget(topName, topName, Nil, name, Nil))))
+        FAMEChannelAnnotation(name, WireChannel, None, Some(Seq(ReferenceTarget(topName, topName, Nil, name, Nil))))
       case op @ Port(_, name, Output, tpe) =>
-        FAMEChannelAnnotation(s"channel_${name}_source", WireChannel, Some(Seq(ReferenceTarget(topName, topName, Nil, name, Nil))), None)
+        FAMEChannelAnnotation(name, WireChannel, Some(Seq(ReferenceTarget(topName, topName, Nil, name, Nil))), None)
     })
     state.copy(annotations = state.annotations ++ Seq(fame1Anno) ++ fameChannelAnnos)
   }

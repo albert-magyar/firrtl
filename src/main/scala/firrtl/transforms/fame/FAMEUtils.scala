@@ -90,15 +90,16 @@ private[fame] object FAMEChannelAnalysis {
     case (a, b) => (a, b)
   }
 
-  def getChannelType(name: String, ports: Seq[Port]): Type = {
+  def getHostDecoupledChannelPayloadType(name: String, ports: Seq[Port]): Type = {
     val fields = ports.map(p => Field(removeCommonPrefix(p.name, name)._1, Default, p.tpe))
     if (fields.size > 1) {
-      Decouple(new BundleType(fields.toSeq))
+      new BundleType(fields.toSeq)
     } else {
-      Decouple(fields.head.tpe)
+      fields.head.tpe
     }
   }
 
+  def getHostDecoupledChannelType(name: String, ports: Seq[Port]): Type = Decouple(getHostDecoupledChannelPayloadType(name, ports))
 }
 
 private [fame] object HostReset {
@@ -206,13 +207,14 @@ private[fame] class FAMEChannelAnalysis(val state: CircuitState, val fameType: F
     }).toMap
   }
 
-  def getSinkChannelType(cName: String): Type = {
-    FAMEChannelAnalysis.getChannelType(cName, sinkPorts(cName).map(portNodes(_)))
+  def getSinkHostDecoupledChannelType(cName: String): Type = {
+    FAMEChannelAnalysis.getHostDecoupledChannelType(cName, sinkPorts(cName).map(portNodes(_)))
   }
 
-  def getSourceChannelType(cName: String): Type = {
-    FAMEChannelAnalysis.getChannelType(cName, sourcePorts(cName).map(portNodes(_)))
+  def getSourceHostDecoupledChannelType(cName: String): Type = {
+    FAMEChannelAnalysis.getHostDecoupledChannelType(cName, sourcePorts(cName).map(portNodes(_)))
   }
+
 }
 
 
