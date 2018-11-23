@@ -3,24 +3,51 @@
 package firrtl.transforms.fame
 
 import firrtl._
+import Mappers._
 import ir._
 import annotations._
+import collection.mutable.{ArrayBuffer, LinkedHashSet}
 
+// Assumes: AQB form
+// Run after ExtractModel
 // Label all unbound top-level ports as wire channels
+// Label *all* model-to-model connections as wire channels
+// Label all children of the top model to be FAME1 transformed
+
 class FAMEDefaults extends Transform {
-  def inputForm = HighForm
-  def outputForm = HighForm
+  def inputForm = LowForm
+  def outputForm = LowForm
 
   override def execute(state: CircuitState): CircuitState = {
     val analysis = new FAMEChannelAnalysis(state, FAME1Transform)
-    val topModule = state.circuit.modules.find(_.name == state.circuit.main).get
+    val topModule = state.circuit.modules.find(_.name == state.circuit.main).get.asInstanceOf[Module]
     val globalSignals = state.annotations.collect({ case g: FAMEGlobalSignal => g.target.ref }).toSet
+    val channelNames = state.annotations.collect({ case fca: FAMEChannelAnnotation => fca.name })
+    val channelNS = Namespace(channelNames)
     def isGlobal(topPort: Port) = globalSignals.contains(topPort.name)
     def isBound(topPort: Port) = analysis.channelsByPort.contains(analysis.topTarget.ref(topPort.name))
-    val defaultPortChannels = topModule.ports.filterNot(isGlobal).filterNot(isBound).map({
-      case Port(_, name, Input, _) => FAMEChannelAnnotation(name, WireChannel, None, Some(Seq(analysis.topTarget.ref(name))))
-      case Port(_, name, Output, _) => FAMEChannelAnnotation(name, WireChannel, Some(Seq(analysis.topTarget.ref(name))), None)
+    val defaultExtChannelAnnos = topModule.ports.filterNot(isGlobal).filterNot(isBound).map({
+      case Port(_, name, Input, _) => FAMEChannelAnnotation(channelNS.newName(name), WireChannel, None, Some(Seq(analysis.topTarget.ref(name))))
+      case Port(_, name, Output, _) => FAMEChannelAnnotation(channelNS.newName(name), WireChannel, Some(Seq(analysis.topTarget.ref(name))), None)
     })
-    state.copy(annotations = state.annotations ++ defaultPortChannels)
+    val channelModules = new LinkedHashSet[String] // TODO: find modules to absorb into channels, don't label as FAME models
+    val defaultLoopbackAnnos = new ArrayBuffer[FAMEChannelAnnotation]
+    val defaultModelAnnos = new ArrayBuffer[FAMETransformAnnotation]
+    val topTarget = ModuleTarget(state.circuit.main, topModule.name)
+    def onStmt(stmt: Statement): Statement = stmt.map(onStmt) match {
+      case wi @ WDefInstance(_, iname, mname, _) if (!channelModules.contains(mname)) =>
+        defaultModelAnnos += FAMETransformAnnotation(FAME1Transform, topTarget.copy(module = mname))
+        wi
+      case c @ Connect(_, WSubField(WRef(lhsiname, _, InstanceKind, _), lhspname, _, _), WSubField(WRef(rhsiname, _, InstanceKind, _), rhspname, _, _)) =>
+        defaultLoopbackAnnos += FAMEChannelAnnotation(
+          channelNS.newName(rhsiname + rhspname),
+          WireChannel,
+          Some(Seq(topTarget.ref(rhsiname).field(rhspname))),
+          Some(Seq(topTarget.ref(lhsiname).field(lhspname))))
+        c
+      case s => s
+    }
+    topModule.body.map(onStmt)
+    state.copy(annotations = state.annotations ++ defaultExtChannelAnnos ++ defaultLoopbackAnnos ++ defaultModelAnnos)
   }
 }
