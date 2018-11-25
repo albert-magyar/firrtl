@@ -26,9 +26,10 @@ class FAMEDefaults extends Transform {
     val channelNS = Namespace(channelNames)
     def isGlobal(topPort: Port) = globalSignals.contains(topPort.name)
     def isBound(topPort: Port) = analysis.channelsByPort.contains(analysis.topTarget.ref(topPort.name))
-    val defaultExtChannelAnnos = topModule.ports.filterNot(isGlobal).filterNot(isBound).map({
-      case Port(_, name, Input, _) => FAMEChannelAnnotation(channelNS.newName(name), WireChannel, None, Some(Seq(analysis.topTarget.ref(name))))
-      case Port(_, name, Output, _) => FAMEChannelAnnotation(channelNS.newName(name), WireChannel, Some(Seq(analysis.topTarget.ref(name))), None)
+    val defaultExtChannelAnnos = topModule.ports.filterNot(isGlobal).filterNot(isBound).flatMap({
+      case Port(_, _, _, ClockType) => None // FIXME: Reject the clock in RC's debug interface
+      case Port(_, name, Input, _)  => Some(FAMEChannelAnnotation(channelNS.newName(name), WireChannel, None, Some(Seq(analysis.topTarget.ref(name)))))
+      case Port(_, name, Output, _) => Some(FAMEChannelAnnotation(channelNS.newName(name), WireChannel, Some(Seq(analysis.topTarget.ref(name))), None))
     })
     val channelModules = new LinkedHashSet[String] // TODO: find modules to absorb into channels, don't label as FAME models
     val defaultLoopbackAnnos = new ArrayBuffer[FAMEChannelAnnotation]
