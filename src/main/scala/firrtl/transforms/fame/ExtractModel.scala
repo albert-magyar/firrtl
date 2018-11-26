@@ -15,11 +15,6 @@ import annotations.{InstanceTarget, Annotation, SingleTargetAnnotation}
 import scala.collection.mutable
 import mutable.{LinkedHashSet, LinkedHashMap}
 
-case class FAMEModelAnnotation(target: InstanceTarget) extends SingleTargetAnnotation[InstanceTarget] {
-  def targets = Seq(target)
-  def duplicate(n: InstanceTarget) = this.copy(n)
-}
-
 class ExtractModel extends Transform {
   def inputForm = HighForm
   def outputForm = HighForm

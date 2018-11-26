@@ -50,6 +50,11 @@ case class FAMEChannelAnnotation(name: String, channelInfo: FAMEChannelInfo, sou
   override def getTargets: Seq[ReferenceTarget] = sources.toSeq.flatten ++ sinks.toSeq.flatten
 }
 
+case class FAMEModelAnnotation(target: InstanceTarget) extends SingleTargetAnnotation[InstanceTarget] {
+  def targets = Seq(target)
+  def duplicate(n: InstanceTarget) = this.copy(n)
+}
+
 abstract class FAMETransformType
 case object FAME1Transform extends FAMETransformType
 case class FAMETransformAnnotation(transformType: FAMETransformType, target: ModuleTarget) extends SingleTargetAnnotation[ModuleTarget] {
