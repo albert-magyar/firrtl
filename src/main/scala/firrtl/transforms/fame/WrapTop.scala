@@ -35,7 +35,16 @@ class WrapTop extends Transform {
       case fca: FAMEChannelAnnotation =>
         fca.copy(sinks = fca.sinks.map(_.map(_.copy(module = topWrapperName))), sources = fca.sources.map(_.map(_.copy(module = topWrapperName))))
       case a => a
+    }).map({ // Also update targets in info fields
+      case fca @ FAMEChannelAnnotation(_,info@DecoupledForwardChannel(_,_,_,_),_,_) =>
+        fca.copy(channelInfo = info.copy(
+          readySink   = info.readySink.  map(_.copy(module = topWrapperName)),
+          validSource = info.validSource.map(_.copy(module = topWrapperName)),
+          readySource = info.readySource.map(_.copy(module = topWrapperName)),
+          validSink   = info.validSink.  map(_.copy(module = topWrapperName))))
+      case a => a
     })
+
     renames.record(CircuitTarget(topName), topWrapperTarget.targetParent)
     state.copy(circuit = newCircuit, annotations = updatedAnnotations ++ specialPortAnnotations, renames = Some(renames))
   }
