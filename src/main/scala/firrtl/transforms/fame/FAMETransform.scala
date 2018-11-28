@@ -157,8 +157,9 @@ object FAMEModuleTransformer {
     val portDeps = ccChecker.analyzeModule(analysis.circuit, m)
     val ccDeps = new LinkedHashMap[FAME1OutputChannel, LinkedHashSet[FAME1InputChannel]]
     portDeps.getEdgeMap.collect({ case (o, iSet) if outChannelMap.contains(o) =>
-      ccDeps.getOrElseUpdate(outChannelMap(o), new LinkedHashSet[FAME1InputChannel])
-      iSet.foreach(i => ccDeps(outChannelMap(o)) += inChannelMap(i) )})
+      // Only add input channels, since output might depend on output RHS ref
+      ccDeps.getOrElseUpdate(outChannelMap(o), new LinkedHashSet[FAME1InputChannel]) ++= iSet.flatMap(inChannelMap.get(_))
+    })
 
     // Step 3: transform ports
     val transformedPorts = clocks ++ Seq(hostReset) ++ inChannels.map(_.asPort) ++ outChannels.map(_.asPort)
@@ -202,7 +203,10 @@ class FAMETransform extends Transform {
   def inputForm = LowForm
   def outputForm = HighForm
 
-  def deleteStaleConnects(analysis: FAMEChannelAnalysis)(stmt: Statement): Statement = stmt.map(deleteStaleConnects(analysis)) match {
+  def updateNonChannelConnects(analysis: FAMEChannelAnalysis)(stmt: Statement): Statement = stmt.map(updateNonChannelConnects(analysis)) match {
+    case wi: WDefInstance if (analysis.transformedModules.contains(analysis.topTarget.copy(module=wi.module))) =>
+      val resetConn = Connect(NoInfo, WSubField(WRef(wi), "hostReset"), WRef(analysis.hostReset.ref, Utils.BoolType))
+      Block(Seq(wi, resetConn))
     case Connect(_, WRef(name, _, _, _), _) if (analysis.staleTopPorts.contains(analysis.topTarget.ref(name))) => EmptyStmt
     case Connect(_, _, WRef(name, _, _, _)) if (analysis.staleTopPorts.contains(analysis.topTarget.ref(name))) => EmptyStmt
     case s => s
@@ -231,10 +235,9 @@ class FAMETransform extends Transform {
       val transformedPorts = ports.filterNot(p => analysis.staleTopPorts.contains(analysis.topTarget.ref(p.name))) ++
         analysis.transformedSinks.map(c => Port(NoInfo, s"${c}_sink", Input, analysis.getSinkHostDecoupledChannelType(c))) ++
         analysis.transformedSources.map(c => Port(NoInfo, s"${c}_source", Output, analysis.getSourceHostDecoupledChannelType(c)))
-      val transformedStmts = Seq(body.map(deleteStaleConnects(analysis))) ++
-        analysis.transformedSinks.map({c => Connect(NoInfo, WSubField(WRef(analysis.sinkModel(c).module), s"${c}_sink"), WRef(s"${c}_sink"))}) ++
-        analysis.transformedSources.map({c => Connect(NoInfo, WRef(s"${c}_source"), WSubField(WRef(analysis.sourceModel(c).module), s"${c}_source"))}) ++
-        analysis.transformedModules.map({m => Connect(NoInfo, WSubField(WRef(m.module), "hostReset"), WRef(analysis.hostReset.ref, Utils.BoolType)) })
+      val transformedStmts = Seq(body.map(updateNonChannelConnects(analysis))) ++
+        analysis.transformedSinks.map({c => Connect(NoInfo, WSubField(WRef(analysis.sinkModel(c).instance), s"${c}_sink"), WRef(s"${c}_sink"))}) ++
+        analysis.transformedSources.map({c => Connect(NoInfo, WRef(s"${c}_source"), WSubField(WRef(analysis.sourceModel(c).instance), s"${c}_source"))})
       Module(info, name, transformedPorts, Block(transformedStmts))
   }
 

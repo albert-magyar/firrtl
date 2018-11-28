@@ -42,8 +42,8 @@ class ChannelExcision extends Transform {
             renames.record(rhsTarget, portTarget(srcP))
             Block(Seq(Connect(NoInfo, lhs, WRef(sinkP)), Connect(NoInfo, WRef(srcP), rhs)))
           case None => c
-      }
-      case s => println(s); s
+        }
+      case s => s
     }
 
     def onModule(m: DefModule): DefModule = m match {

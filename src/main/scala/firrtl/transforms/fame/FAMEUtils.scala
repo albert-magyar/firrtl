@@ -142,29 +142,29 @@ private[fame] class FAMEChannelAnalysis(val state: CircuitState, val fameType: F
   })
 
   val topTarget = ModuleTarget(circuit.main, circuit.main)
-  private val moduleOf = new LinkedHashMap[String, String]
+  private val moduleOfInstance = new LinkedHashMap[String, String]
   val topConnects = new LinkedHashMap[ReferenceTarget, ReferenceTarget]
   val inputChannels = new LinkedHashMap[ModuleTarget, mutable.Set[String]] with MultiMap[ModuleTarget, String]
   val outputChannels = new LinkedHashMap[ModuleTarget, mutable.Set[String]] with MultiMap[ModuleTarget, String]
   moduleNodes(topTarget).asInstanceOf[Module].body.map(getTopConnects)
   def getTopConnects(stmt: Statement): Statement = stmt.map(getTopConnects) match {
     case WDefInstance(_, iname, mname, _) =>
-      moduleOf(iname) = mname
+      moduleOfInstance(iname) = mname
       EmptyStmt
     case Connect(_, WRef(tpname, _, _, _), WSubField(WRef(iname, _, _, _), pname, _, _)) =>
       val tpRef = topTarget.ref(tpname)
       channelsByPort.get(tpRef).foreach({ cname =>
-        val child = ModuleTarget(circuit.main, moduleOf(iname))
+        val child = topTarget.instOf(iname, moduleOfInstance(iname))
         topConnects(tpRef) = child.ref(pname)
-        outputChannels.addBinding(child, cname)
+        outputChannels.addBinding(child.ofModuleTarget, cname)
       })
       EmptyStmt
     case Connect(_, WSubField(WRef(iname, _, _, _), pname, _, _), WRef(tpname, _, _, _)) =>
       val tpRef = topTarget.ref(tpname)
       channelsByPort.get(tpRef).foreach({ cname =>
-        val child = ModuleTarget(circuit.main, moduleOf(iname))
+        val child = topTarget.instOf(iname, moduleOfInstance(iname))
         topConnects(tpRef) = child.ref(pname)
-        inputChannels.addBinding(child, cname)
+        inputChannels.addBinding(child.ofModuleTarget, cname)
       })
       EmptyStmt
     case s => EmptyStmt
@@ -172,8 +172,8 @@ private[fame] class FAMEChannelAnalysis(val state: CircuitState, val fameType: F
 
   val transformedSinks = new LinkedHashSet[String]
   val transformedSources = new LinkedHashSet[String]
-  val sinkModel = new LinkedHashMap[String, ModuleTarget]
-  val sourceModel = new LinkedHashMap[String, ModuleTarget]
+  val sinkModel = new LinkedHashMap[String, InstanceTarget]
+  val sourceModel = new LinkedHashMap[String, InstanceTarget]
   val sinkPorts = new LinkedHashMap[String, Seq[ReferenceTarget]]
   val sourcePorts = new LinkedHashMap[String, Seq[ReferenceTarget]]
   val staleTopPorts = new LinkedHashSet[ReferenceTarget]
@@ -183,14 +183,16 @@ private[fame] class FAMEChannelAnalysis(val state: CircuitState, val fameType: F
       val sinks = fca.sinks.toSeq.flatten
       sinkPorts(fca.name) = sinks
       sinks.headOption.filter(rt => transformedModules.contains(ModuleTarget(rt.circuit, topConnects(rt).encapsulatingModule))).foreach({ rt =>
-        sinkModel(fca.name) = ModuleTarget(rt.circuit, topConnects(rt).encapsulatingModule)
+        assert(!topConnects(rt).isLocal) // need instance info
+        sinkModel(fca.name) = topConnects(rt).targetParent.asInstanceOf[InstanceTarget]
         transformedSinks += fca.name
         staleTopPorts ++= sinks
       })
       val sources = fca.sources.toSeq.flatten
       sourcePorts(fca.name) = sources
       sources.headOption.filter(rt => transformedModules.contains(ModuleTarget(rt.circuit, topConnects(rt).encapsulatingModule))).foreach({ rt =>
-        sourceModel(fca.name) = ModuleTarget(rt.circuit, topConnects(rt).encapsulatingModule)
+        assert(!topConnects(rt).isLocal) // need instance info
+        sourceModel(fca.name) = topConnects(rt).targetParent.asInstanceOf[InstanceTarget]
         transformedSources += fca.name
         staleTopPorts ++= sources
       })
@@ -201,14 +203,14 @@ private[fame] class FAMEChannelAnalysis(val state: CircuitState, val fameType: F
   def inputPortsByChannel(m: DefModule): Map[String, Seq[Port]] = {
     val iChannels = inputChannels.get(ModuleTarget(circuit.main, m.name)).toSet.flatten
     iChannels.map({
-      cname => (cname, sinkPorts(cname).map(topConnects(_)).map(portNodes(_)))
+      cname => (cname, sinkPorts(cname).map(topConnects(_).pathlessTarget).map(portNodes(_)))
     }).toMap
   }
 
   def outputPortsByChannel(m: DefModule): Map[String, Seq[Port]] = {
     val oChannels = outputChannels.get(ModuleTarget(circuit.main, m.name)).toSet.flatten
     oChannels.map({
-      cname => (cname, sourcePorts(cname).map(topConnects(_)).map(portNodes(_)))
+      cname => (cname, sourcePorts(cname).map(topConnects(_).pathlessTarget).map(portNodes(_)))
     }).toMap
   }
 

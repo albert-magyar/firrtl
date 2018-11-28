@@ -40,11 +40,13 @@ class FAMEDefaults extends Transform {
         defaultModelAnnos += FAMETransformAnnotation(FAME1Transform, topTarget.copy(module = mname))
         wi
       case c @ Connect(_, WSubField(WRef(lhsiname, _, InstanceKind, _), lhspname, _, _), WSubField(WRef(rhsiname, _, InstanceKind, _), rhspname, _, _)) =>
-        defaultLoopbackAnnos += FAMEChannelAnnotation(
-          channelNS.newName(s"${rhsiname}_${rhspname}__to__${lhsiname}_${lhspname}"),
-          WireChannel,
-          Some(Seq(topTarget.ref(rhsiname).field(rhspname))),
-          Some(Seq(topTarget.ref(lhsiname).field(lhspname))))
+        if (c.loc.tpe != ClockType && c.expr.tpe != ClockType) {
+          defaultLoopbackAnnos += FAMEChannelAnnotation(
+            channelNS.newName(s"${rhsiname}_${rhspname}__to__${lhsiname}_${lhspname}"),
+            WireChannel,
+            Some(Seq(topTarget.ref(rhsiname).field(rhspname))),
+            Some(Seq(topTarget.ref(lhsiname).field(lhspname))))
+        }
         c
       case s => s
     }
