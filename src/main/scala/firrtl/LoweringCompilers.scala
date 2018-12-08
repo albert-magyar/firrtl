@@ -180,21 +180,3 @@ class UclidCompiler extends Compiler {
   def transforms: Seq[Transform] = getLoweringTransforms(ChirrtlForm, LowForm) ++
     Seq(new LowFirrtlOptimization, new BlackBoxSourceHelper)
 }
-
-class FAMECompiler extends Compiler {
-  import firrtl.transforms.fame
-  def emitter = new HighFirrtlEmitter
-  val inToLow = getLoweringTransforms(ChirrtlForm, LowForm)
-  def transforms: Seq[Transform] =
-    getLoweringTransforms(ChirrtlForm, LowForm) ++ Seq(
-      new fame.WrapTop,
-      new ResolveAndCheck,
-      new fame.ExtractModel,
-      new ResolveAndCheck,
-      new HighFirrtlToMiddleFirrtl,
-      new MiddleFirrtlToLowFirrtl,
-      new fame.FAMEDefaults,
-      new fame.FAMETransform,
-      new ResolveAndCheck
-    )
-}
