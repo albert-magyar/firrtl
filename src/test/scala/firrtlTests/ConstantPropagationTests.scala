@@ -1039,7 +1039,7 @@ class ConstantPropagationIntegrationSpec extends LowTransformSpec {
           |    reg r : UInt<8>, clock with : (reset => (reset, UInt<4>("h7")))
           |    r <= r
           |    when eq(cmd, UInt<3>("h0")) :
-          |      r <= UInt<4>("h7")
+          |      r <= UInt<3>("h7")
           |    else :
           |      when eq(cmd, UInt<3>("h1")) :
           |        r <= r
