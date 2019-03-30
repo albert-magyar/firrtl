@@ -227,10 +227,15 @@ class UclidEmitter extends SeqTransform with Emitter {
     w write s"var ${wire.name} : ${uclType};\n"
   }
 
-  private def emit_init(mems: Seq[DefMemory], nodes: Seq[DefNode], comb_assigns: Seq[Connect])(implicit w: Writer, indent: IndentLevel): Unit = {
+  private def emit_init(mems: Seq[DefMemory], nodes: Seq[DefNode], comb_assigns: Seq[Connect], reset: Option[Port])
+    (implicit w: Writer, indent: IndentLevel): Unit = {
     indent_line()
     w.write(s"init {\n")
     indent.increase()
+    for (r <- reset) {
+      indent_line()
+      w.write("assume reset == true;\n")
+    }
     for (m <- mems) {
       indent_line()
       val addrType = serialize_type(memAddrType(m))
@@ -404,6 +409,7 @@ class UclidEmitter extends SeqTransform with Emitter {
     val reg_assigns = ArrayBuffer[Connect]()
     val comb_assigns = ArrayBuffer[Connect]()
     val wire_assigns = ArrayBuffer[Connect]()
+    val implicit_reset = m.ports.collectFirst({ case p @ Port(_, "reset", Input, BoolType) => p })
     def processStatements(s: Statement): Statement = s map processStatements match {
       case sx: DefNode =>
         nodes += sx
@@ -477,7 +483,7 @@ class UclidEmitter extends SeqTransform with Emitter {
     emit_comment("Nodes")
     nodes.foreach(emit_node_decl(_))
     emit_comment("Init")
-    emit_init(mem_decls, nodes, comb_assigns)
+    emit_init(mem_decls, nodes, comb_assigns, implicit_reset)
     implicit var rhsPrimes = false
     emit_comment("Mem Writes")
     mem_decls.foreach(emit_mem_write_procedure(_))
